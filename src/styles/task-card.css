@@ -1,0 +1,55 @@
+.task-card-list {
+  display: grid;
+  gap: 12px;
+}
+
+.task-card {
+  display: grid;
+  grid-template-columns: 38px minmax(0, 1fr) auto;
+  align-items: center;
+  gap: 13px;
+  border: 1px solid #ebebf2;
+  border-radius: 13px;
+  background: white;
+  padding: 13px 15px;
+  color: #85879a;
+  transition: 150ms ease;
+}
+
+.task-card:hover {
+  border-color: #d7d7e8;
+  background: #fafafe;
+}
+
+.task-card__icon {
+  display: grid;
+  width: 38px;
+  height: 38px;
+  place-items: center;
+  border-radius: 11px;
+  background: #ebeaff;
+  color: #5b5cda;
+}
+
+.task-card__content { min-width: 0; }
+.task-card__heading { display: flex; flex-wrap: wrap; align-items: center; gap: 8px; }
+.task-card__title { color: #393b52; font-size: 14px; font-weight: 800; }
+.task-card__category { border-radius: 999px; background: #f4f4f8; padding: 4px 8px; color: #848698; font-size: 10px; font-weight: 800; }
+.task-card__description { margin-top: 5px; color: #8f91a4; font-size: 11px; }
+.task-card__owner { display: flex; grid-column: 2 / -1; align-items: baseline; gap: 5px; width: auto; text-align: left; }
+.task-card__owner small { color: #a0a2b2; font-size: 9px; }
+.task-card__owner strong { color: #55576d; font-size: 11px; font-weight: 800; }
+.task-card__actions { display: flex; grid-column: 2 / -1; align-items: center; gap: 8px; }
+.task-card__report { flex: 0 0 auto; color: #6062d0; font-size: 11px; font-weight: 800; white-space: nowrap; }
+.task-card__report:hover { text-decoration: underline; }
+.task-card__resolve { display: inline-flex; flex: 0 0 auto; align-items: center; gap: 5px; border: 1px solid #dcdce7; border-radius: 8px; padding: 7px 9px; color: #74768c; font-size: 11px; font-weight: 800; white-space: nowrap; }
+.task-card__resolve:hover { border-color: #b8daca; color: #288b65; }
+.task-card .status-badge { gap: 5px; padding: 6px 10px; font-size: 10px; }
+
+@media (min-width: 768px) {
+  .task-card { grid-template-columns: 38px minmax(150px, 1fr) 105px auto auto; }
+  .task-card__owner { display: block; grid-column: auto; width: 105px; text-align: center; }
+  .task-card__owner small, .task-card__owner strong { display: block; }
+  .task-card__owner strong { margin-top: 3px; }
+  .task-card__actions { grid-column: auto; }
+}

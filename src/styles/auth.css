@@ -1,0 +1,25 @@
+.auth-form__field {
+  display: flex;
+  height: 54px;
+  align-items: center;
+  gap: 12px;
+  border: 1px solid #dedee8;
+  border-radius: 14px;
+  padding: 0 16px;
+  color: #9698aa;
+  transition: 180ms ease;
+}
+
+.auth-form__field:focus-within {
+  border-color: #6768df;
+  box-shadow: 0 0 0 4px rgba(91, 92, 226, 0.1);
+}
+
+.auth-form__field input {
+  min-width: 0;
+  flex: 1;
+  border: 0;
+  outline: 0;
+  color: #2f314a;
+}
+

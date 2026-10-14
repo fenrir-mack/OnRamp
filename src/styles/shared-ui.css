@@ -1,0 +1,74 @@
+.section-heading {
+  display: flex;
+  align-items: end;
+  justify-content: space-between;
+  gap: 16px;
+}
+
+.section-heading h2 {
+  margin-top: 3px;
+  font-size: 20px;
+  font-weight: 800;
+  letter-spacing: -0.02em;
+}
+
+.eyebrow {
+  color: #797be1;
+  font-size: 11px;
+  font-weight: 800;
+  letter-spacing: 0.13em;
+  text-transform: uppercase;
+}
+
+.section-heading__link {
+  display: none;
+  align-items: center;
+  gap: 7px;
+  color: #5556cf;
+  font-size: 12px;
+  font-weight: 800;
+}
+
+.content-panel {
+  border: 1px solid #ececf3;
+  border-radius: 18px;
+  background: white;
+  padding: 22px;
+  box-shadow: 0 5px 20px rgba(43, 45, 80, 0.035);
+}
+
+.button-primary {
+  display: flex;
+  height: 54px;
+  align-items: center;
+  justify-content: center;
+  gap: 10px;
+  border-radius: 14px;
+  background: #5556d8;
+  color: white;
+  font-size: 14px;
+  font-weight: 800;
+  box-shadow: 0 10px 24px rgba(85, 86, 216, 0.24);
+  transition: 180ms ease;
+}
+
+.button-primary:hover { background: #4748c3; transform: translateY(-1px); }
+
+.status-badge {
+  display: inline-flex;
+  flex: 0 0 auto;
+  align-items: center;
+  gap: 4px;
+  border-radius: 999px;
+  padding: 5px 8px;
+  font-size: 8px;
+  font-weight: 800;
+}
+
+.status-badge--concluido, .status-badge--resolvido { background: #e7f7ef; color: #288b65; }
+.status-badge--pendente { background: #fff1dc; color: #a9681c; }
+.status-badge--atrasado { background: #feeaea; color: #bd4c4c; }
+
+@media (min-width: 640px) {
+  .section-heading__link { display: flex; }
+}
