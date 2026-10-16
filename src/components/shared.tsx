@@ -9,6 +9,7 @@ export type IconName =
   | "chevron"
   | "clock"
   | "grid"
+    | "download"
   | "help"
   | "home"
   | "lock"
@@ -58,6 +59,13 @@ export function Icon({ name, size = 20 }: { name: IconName; size?: number }) {
         <rect x="14" y="14" width="7" height="7" rx="1" />
       </>
     ),
+      download: (
+          <>
+              <path d="M12 3v12"/>
+              <path d="m7 10 5 5 5-5"/>
+              <path d="M5 21h14"/>
+          </>
+      ),
     help: (
       <>
         <circle cx="12" cy="12" r="9" />
@@ -139,14 +147,14 @@ export function Icon({ name, size = 20 }: { name: IconName; size?: number }) {
 }
 
 export const resources = [
-  { title: "Guia de benefícios", category: "Benefícios", meta: "PDF • 8 min", description: "Conheça seus benefícios, critérios de elegibilidade e canais de atendimento.", owner: "Pessoas & Cultura", icon: "briefcase" as IconName, tone: "indigo" },
-  { title: "Políticas da empresa", category: "Políticas", meta: "Documento • 12 min", description: "Consulte as principais diretrizes e os acordos que orientam nosso dia a dia.", owner: "Pessoas & Cultura", icon: "book" as IconName, tone: "blue" },
-  { title: "Acessos e ferramentas", category: "Ferramentas", meta: "Checklist • 6 min", description: "Veja quais ferramentas usamos e como começar a acessar cada uma delas.", owner: "Tecnologia", icon: "tools" as IconName, tone: "orange" },
-  { title: "Manual do novo talento", category: "Onboarding", meta: "PDF • 15 min", description: "Um guia prático para conhecer a empresa e se organizar nos primeiros dias.", owner: "Pessoas & Cultura", icon: "sparkle" as IconName, tone: "purple" },
-  { title: "Política de trabalho remoto", category: "Políticas", meta: "PDF • 4 min", description: "Entenda os combinados para trabalhar de forma remota ou híbrida.", owner: "Pessoas & Cultura", icon: "home" as IconName, tone: "blue" },
-  { title: "Guia de reembolso", category: "Financeiro", meta: "PDF • 5 min", description: "Confira quais despesas podem ser reembolsadas e como enviar uma solicitação.", owner: "Financeiro", icon: "briefcase" as IconName, tone: "orange" },
-  { title: "Código de conduta", category: "Cultura", meta: "PDF • 9 min", description: "Conheça os princípios de respeito, ética e colaboração que compartilhamos.", owner: "Pessoas & Cultura", icon: "book" as IconName, tone: "purple" },
-  { title: "Agenda da primeira semana", category: "Onboarding", meta: "Agenda • 3 min", description: "Veja os principais encontros e atividades planejados para a sua primeira semana.", owner: "Pessoas & Cultura", icon: "calendar" as IconName, tone: "indigo" },
+  { title: "Guia de benefícios", category: "Benefícios", meta: "PDF • 8 min", description: "Conheça seus benefícios, critérios de elegibilidade e canais de atendimento.", owner: "Pessoas & Cultura", icon: "briefcase" as IconName, tone: "indigo", downloadUrl: "/materiais/guia-beneficios.pdf", },
+  { title: "Políticas da empresa", category: "Políticas", meta: "Documento • 12 min", description: "Consulte as principais diretrizes e os acordos que orientam nosso dia a dia.", owner: "Pessoas & Cultura", icon: "book" as IconName, tone: "blue", downloadUrl: "/materiais/politicas-da-empresa.docx" },
+  { title: "Acessos e ferramentas", category: "Ferramentas", meta: "Checklist • 6 min", description: "Veja quais ferramentas usamos e como começar a acessar cada uma delas.", owner: "Tecnologia", icon: "tools" as IconName, tone: "orange", downloadUrl: "/materiais/acessos-e-ferramentas.pdf" },
+  { title: "Manual do novo talento", category: "Onboarding", meta: "PDF • 15 min", description: "Um guia prático para conhecer a empresa e se organizar nos primeiros dias.", owner: "Pessoas & Cultura", icon: "sparkle" as IconName, tone: "purple", downloadUrl: "/materiais/manual-novo-talento.pdf", },
+  { title: "Política de trabalho remoto", category: "Políticas", meta: "PDF • 4 min", description: "Entenda os combinados para trabalhar de forma remota ou híbrida.", owner: "Pessoas & Cultura", icon: "home" as IconName, tone: "blue", downloadUrl: "/materiais/politica-trabalho-remoto.pdf", },
+  { title: "Guia de reembolso", category: "Financeiro", meta: "PDF • 5 min", description: "Confira quais despesas podem ser reembolsadas e como enviar uma solicitação.", owner: "Financeiro", icon: "briefcase" as IconName, tone: "orange", downloadUrl: "/materiais/guia-reembolso.pdf", },
+  { title: "Código de conduta", category: "Cultura", meta: "PDF • 9 min", description: "Conheça os princípios de respeito, ética e colaboração que compartilhamos.", owner: "Pessoas & Cultura", icon: "book" as IconName, tone: "purple", downloadUrl: "/materiais/codigo-conduta.pdf", },
+  { title: "Agenda da primeira semana", category: "Onboarding", meta: "Agenda • 3 min", description: "Veja os principais encontros e atividades planejados para a sua primeira semana.", owner: "Pessoas & Cultura", icon: "calendar" as IconName, tone: "indigo", downloadUrl: "/materiais/agenda-primeira-semana.xlsx" },
 ];
 
 export const folders = [
