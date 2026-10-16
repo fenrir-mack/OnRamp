@@ -58,7 +58,7 @@ export default function HomeView({ query, setQuery, filtered, setActiveNav }: Ho
           <button onClick={() => setActiveNav("Conteúdos")} className="section-heading__link">Abrir biblioteca <Icon name="arrow" size={17} /></button>
         </div>
         <div className="mt-5 grid gap-5 xl:grid-cols-[0.9fr_1.35fr]">
-          <button className="featured-resource text-left">
+          <div className="featured-resource text-left">
             <div className="flex items-start justify-between">
               <span className="featured-resource__label"><Icon name="sparkle" size={14} /> Em destaque</span>
               <span className="text-xs font-bold text-[#7779db]">PDF</span>
@@ -67,9 +67,16 @@ export default function HomeView({ query, setQuery, filtered, setActiveNav }: Ho
               <div className="resource-icon resource-icon--indigo"><Icon name="book" size={22} /></div>
               <h3 className="mt-4 text-lg font-extrabold">Manual do novo talento</h3>
               <p className="mt-2 text-sm leading-6 text-[#74778f]">O guia essencial para os seus primeiros dias na empresa.</p>
-              <span className="mt-5 flex items-center gap-2 text-xs font-extrabold text-[#5556d8]">Abrir arquivo <Icon name="arrow" size={16} /></span>
+              <a
+                  href="/materiais/manual-novo-talento.pdf"
+                  download="manual-novo-talento.pdf"
+                  className="mt-5 flex w-fit items-center gap-2 text-xs font-extrabold text-[#5556d8] no-underline"
+              >
+                Abrir arquivo
+                <Icon name="arrow" size={16}/>
+              </a>
             </div>
-          </button>
+          </div>
           <div className="content-panel">
             <div className="flex items-center justify-between">
               <div><h3 className="text-sm font-extrabold">Pastas</h3><p className="mt-1 text-xs text-[#8a8da2]">23 arquivos organizados por assunto</p></div>
