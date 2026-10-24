@@ -5,6 +5,8 @@ import StageSummary from "../components/StageSummary";
 import TaskCard from "../components/TaskCard";
 import { Icon, type IconName } from "../components/shared";
 import { journeyStages } from "../data/journeyStages";
+import type { StageTask } from "../data/journeyStages";
+import { useLocalStorageState } from "../hooks/useLocalStorageState";
 
 type PreparationItem = {
   name: string;
@@ -24,14 +26,24 @@ export const preparationItems: PreparationItem[] = [
 
 const preEntryOverview = journeyStages[0];
 
-function PreOnboardingPanel({ onProgressChange }: { onProgressChange: (completed: number, total: number) => void }) {
+function PreOnboardingPanel({ onProgressChange, employeeId, plannedTasks, useCustomPlan }: { onProgressChange: (completed: number, total: number) => void; employeeId: number; plannedTasks: StageTask[]; useCustomPlan: boolean }) {
+  const items: PreparationItem[] = useCustomPlan
+    ? plannedTasks.map((task) => ({
+        name: task.title,
+        detail: task.description,
+        category: task.category,
+        owner: task.owner,
+        status: task.completed ? "Concluído" : task.overdue ? "Atrasado" : "Pendente",
+        icon: task.icon,
+      }))
+    : preparationItems;
   const [reporting, setReporting] = useState<string | null>(null);
-  const [sentIssues, setSentIssues] = useState<string[]>([]);
-  const [resolvedItems, setResolvedItems] = useState<string[]>([]);
+  const [sentIssues, setSentIssues] = useLocalStorageState<string[]>(`onramp.preparationIssues.${employeeId}`, []);
+  const [resolvedItems, setResolvedItems] = useLocalStorageState<string[]>(`onramp.resolvedPreparationItems.${employeeId}`, []);
   const [confirmResolution, setConfirmResolution] = useState<string | null>(null);
-  const preparedCount = preparationItems.filter((item) => item.status === "Concluído" || resolvedItems.includes(item.name)).length;
-  const pendingCount = preparationItems.filter((item) => item.status === "Pendente" && !resolvedItems.includes(item.name)).length;
-  const delayedCount = preparationItems.filter((item) => item.status === "Atrasado" && !resolvedItems.includes(item.name)).length;
+  const preparedCount = items.filter((item) => item.status === "Concluído" || resolvedItems.includes(item.name)).length;
+  const pendingCount = items.filter((item) => item.status === "Pendente" && !resolvedItems.includes(item.name)).length;
+  const delayedCount = items.filter((item) => item.status === "Atrasado" && !resolvedItems.includes(item.name)).length;
 
   function sendIssue(event: FormEvent<HTMLFormElement>) {
     event.preventDefault();
@@ -53,7 +65,7 @@ function PreOnboardingPanel({ onProgressChange }: { onProgressChange: (completed
       />
 
       <div className="task-card-list preparation__list">
-        {preparationItems.map((item) => {
+        {items.length ? items.map((item) => {
           const resolved = resolvedItems.includes(item.name);
           const currentStatus = resolved ? "Resolvido" : item.status;
           const statusLabel = currentStatus === "Pendente"
@@ -73,7 +85,7 @@ function PreOnboardingPanel({ onProgressChange }: { onProgressChange: (completed
             onReport={() => setReporting(item.name)}
             onResolve={item.status !== "Concluído" && !resolved ? () => setConfirmResolution(item.name) : undefined}
           />;
-        })}
+        }) : <p className="rounded-xl border border-dashed border-[#dedeeb] bg-[#fafafe] p-6 text-center text-sm text-[#85879a]">O RH ainda não adicionou tarefas para esta etapa.</p>}
       </div>
 
       {(sentIssues.length > 0 || reporting) && (
@@ -118,9 +130,9 @@ function PreOnboardingPanel({ onProgressChange }: { onProgressChange: (completed
                 className="modal__confirm"
                 onClick={() => {
                   const nextResolvedItems = [...resolvedItems, confirmResolution];
-                  const completed = preparationItems.filter((item) => item.status === "Concluído" || nextResolvedItems.includes(item.name)).length;
+                  const completed = items.filter((item) => item.status === "Concluído" || nextResolvedItems.includes(item.name)).length;
                   setResolvedItems(nextResolvedItems);
-                  onProgressChange(completed, preparationItems.length);
+                  onProgressChange(completed, items.length);
                   setConfirmResolution(null);
                 }}
               >

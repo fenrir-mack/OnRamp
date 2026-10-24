@@ -35,6 +35,8 @@
 .task-card__heading { display: flex; flex-wrap: wrap; align-items: center; gap: 8px; }
 .task-card__title { color: #393b52; font-size: 14px; font-weight: 800; }
 .task-card__category { border-radius: 999px; background: #f4f4f8; padding: 4px 8px; color: #848698; font-size: 10px; font-weight: 800; }
+.task-card__requirement { border-radius: 999px; background: #f4f4f8; padding: 4px 8px; color: #777a91; font-size: 10px; font-weight: 800; }
+.task-card__requirement--required { background: #fff1dc; color: #a9681c; }
 .task-card__description { margin-top: 5px; color: #8f91a4; font-size: 11px; }
 .task-card__owner { display: flex; grid-column: 2 / -1; align-items: baseline; gap: 5px; width: auto; text-align: left; }
 .task-card__owner small { color: #a0a2b2; font-size: 9px; }

@@ -7,10 +7,12 @@ export type StageTask = {
   category: string;
   icon: IconName;
   owner: string;
+  required?: boolean;
   overdue?: boolean;
 };
 
 export type JourneyStage = {
+  code: string;
   label: string;
   date: string;
   status: "done" | "current" | "next";
@@ -26,6 +28,7 @@ export type JourneyStage = {
 
 export const journeyStages: JourneyStage[] = [
   {
+    code: "pre-entry",
     label: "Pré-entrada",
     date: "Concluído",
     status: "done",
@@ -39,6 +42,7 @@ export const journeyStages: JourneyStage[] = [
     materials: ["Checklist de documentos", "Guia de benefícios", "Agenda da primeira semana"],
   },
   {
+    code: "first-steps",
     label: "Primeiros passos",
     date: "Concluído",
     status: "done",
@@ -58,6 +62,7 @@ export const journeyStages: JourneyStage[] = [
     materials: ["Organograma e áreas", "Manual do novo talento", "Trilha de capacitação"],
   },
   {
+    code: "in-progress",
     label: "Em andamento",
     date: "Você está aqui",
     status: "current",
@@ -78,6 +83,7 @@ export const journeyStages: JourneyStage[] = [
     materials: ["Plano de 30 dias", "Trilha da sua área", "Políticas e treinamentos"],
   },
   {
+    code: "completion",
     label: "Onboarding concluído",
     date: "Próxima etapa",
     status: "next",

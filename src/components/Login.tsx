@@ -3,14 +3,42 @@ import { useState } from "react";
 import type { FormEvent } from "react";
 import { Brand, Icon } from "./shared";
 
-function Login({ onLogin }: { onLogin: () => void }) {
+export type AuthenticatedEmployee = {
+  id: number;
+  name: string;
+  email: string;
+  jobTitle: string | null;
+  department: string | null;
+  isHrAdmin: boolean;
+};
+
+function Login({ onLogin }: { onLogin: (employee: AuthenticatedEmployee) => void }) {
   const [showPassword, setShowPassword] = useState(false);
   const [loading, setLoading] = useState(false);
+  const [email, setEmail] = useState("");
+  const [password, setPassword] = useState("");
+  const [rememberMe, setRememberMe] = useState(false);
+  const [error, setError] = useState("");
+  const [resetMessage, setResetMessage] = useState("");
 
-  function submit(event: FormEvent) {
+  async function submit(event: FormEvent<HTMLFormElement>) {
     event.preventDefault();
     setLoading(true);
-    window.setTimeout(onLogin, 450);
+    setError("");
+    try {
+      const response = await fetch("/api/auth/login", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ email, password, rememberMe }),
+      });
+      const result = await response.json();
+      if (!response.ok) throw new Error(result.error ?? "Não foi possível entrar.");
+      onLogin(result.employee as AuthenticatedEmployee);
+    } catch (submitError) {
+      setError(submitError instanceof Error ? submitError.message : "Não foi possível conectar ao servidor.");
+    } finally {
+      setLoading(false);
+    }
   }
 
   return (
@@ -45,14 +73,14 @@ function Login({ onLogin }: { onLogin: () => void }) {
                 <span className="mb-2 block text-sm font-bold text-[#34364e]">E-mail corporativo</span>
                 <div className="auth-form__field">
                   <Icon name="mail" size={19} />
-                  <input required defaultValue="ana.silva@empresa.com" type="email" aria-label="E-mail corporativo" />
+                  <input autoComplete="username" required value={email} onChange={(event) => setEmail(event.target.value)} type="email" aria-label="E-mail corporativo" />
                 </div>
               </label>
               <label className="block">
                 <span className="mb-2 block text-sm font-bold text-[#34364e]">Senha</span>
                 <div className="auth-form__field">
                   <Icon name="lock" size={19} />
-                  <input required defaultValue="boasvindas" type={showPassword ? "text" : "password"} aria-label="Senha" />
+                  <input autoComplete="current-password" required value={password} onChange={(event) => setPassword(event.target.value)} type={showPassword ? "text" : "password"} aria-label="Senha" />
                   <button className="text-xs font-bold text-[#5b5ce2]" onClick={() => setShowPassword(!showPassword)} type="button">
                     {showPassword ? "Ocultar" : "Mostrar"}
                   </button>
@@ -60,11 +88,13 @@ function Login({ onLogin }: { onLogin: () => void }) {
               </label>
               <div className="flex items-center justify-between gap-4">
                 <label className="flex cursor-pointer items-center gap-3 text-sm text-[#60637c]">
-                  <input className="size-4 accent-[#5b5ce2]" type="checkbox" defaultChecked />
+                  <input className="size-4 accent-[#5b5ce2]" type="checkbox" checked={rememberMe} onChange={(event) => setRememberMe(event.target.checked)} />
                   Manter-me conectado
                 </label>
-                <button className="text-sm font-bold text-[#5b5ce2] hover:text-[#4546bd]" type="button">Esqueci minha senha</button>
+                <button className="text-sm font-bold text-[#5b5ce2] hover:text-[#4546bd]" onClick={() => setResetMessage("Para redefinir sua senha, fale com a equipe de Tecnologia.")} type="button">Esqueci minha senha</button>
               </div>
+              {error && <p className="text-sm font-semibold text-red-600" role="alert">{error}</p>}
+              {resetMessage && <p className="text-sm text-[#70738e]" role="status">{resetMessage}</p>}
               <button className="button-primary w-full" disabled={loading} type="submit">
                 {loading ? "Entrando..." : "Entrar na plataforma"}
                 {!loading && <Icon name="arrow" size={19} />}

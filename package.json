@@ -4,14 +4,15 @@
   "version": "1.0.0",
   "type": "module",
   "scripts": {
-    "dev": "vite",
+    "dev": "concurrently -k \"npm:dev:api\" \"vite\"",
+    "dev:api": "node --watch --env-file=.env server/index.js",
+    "db:setup": "node --env-file=.env scripts/setup-local-db.js",
     "build": "vite build",
     "preview": "vite preview",
-    "start": "node server/index.js",
     "format": "oxfmt"
   },
   "dependencies": {
-    "@azure/identity": "^4.14.0",
+    "concurrently": "^10.0.6",
     "express": "^5.3.0",
     "pg": "^8.23.1",
     "react": "^19.0.0",

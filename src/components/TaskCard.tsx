@@ -8,6 +8,7 @@ type TaskCardProps = {
   detail: string;
   category: string;
   owner: string;
+  required?: boolean;
   icon: IconName;
   status: TaskStatus;
   statusLabel?: string;
@@ -22,7 +23,7 @@ const statusDetails: Record<TaskStatus, { modifier: string; icon: IconName }> = 
   "Resolvido": { modifier: "resolvido", icon: "check" },
 };
 
-function TaskCard({ title, detail, category, owner, icon, status, statusLabel, onReport, onResolve }: TaskCardProps) {
+function TaskCard({ title, detail, category, owner, icon, status, statusLabel, required, onReport, onResolve }: TaskCardProps) {
   const currentStatus = statusDetails[status];
   const label = statusLabel ?? status;
 
@@ -33,6 +34,7 @@ function TaskCard({ title, detail, category, owner, icon, status, statusLabel, o
         <div className="task-card__heading">
           <h3 className="task-card__title">{title}</h3>
           <span className="task-card__category">{category}</span>
+          {required !== undefined && <span className={`task-card__requirement ${required ? "task-card__requirement--required" : ""}`}>{required ? "Obrigatória" : "Opcional"}</span>}
         </div>
         <p className="task-card__description">{detail}</p>
       </div>

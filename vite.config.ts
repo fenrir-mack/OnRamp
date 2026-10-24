@@ -19,15 +19,15 @@ export default defineConfig(({ mode }) => {
       },
     },
     server: {
-      host: process.env.HOST ?? "0.0.0.0",
+      host: process.env.HOST ?? "127.0.0.1",
       port: Number(process.env.PORT ?? 8443),
       strictPort: true,
       proxy: {
-        "/api": process.env.API_PROXY_TARGET ?? "http://127.0.0.1:3000",
+        "/api": "http://127.0.0.1:3000",
       },
     },
     preview: {
-      host: process.env.HOST ?? "0.0.0.0",
+      host: process.env.HOST ?? "127.0.0.1",
       port: Number(process.env.PREVIEW_PORT ?? 4173),
     },
   };

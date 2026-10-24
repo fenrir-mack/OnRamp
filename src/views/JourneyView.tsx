@@ -3,26 +3,65 @@ import { useEffect, useState } from "react";
 import { Icon } from "../components/shared";
 import TaskCard from "../components/TaskCard";
 import StageSummary from "../components/StageSummary";
-import { journeyStages } from "../data/journeyStages";
+import { journeyStages as defaultJourneyStages } from "../data/journeyStages";
+import type { StageTask } from "../data/journeyStages";
+import { useLocalStorageState } from "../hooks/useLocalStorageState";
 import PreOnboardingPanel, { preparationItems } from "./PreOnboardingPanel";
 
-function JourneyView({ resetVersion }: { resetVersion: number }) {
+type EmployeePlanTask = { stageCode: string; title: string; description: string; category: string; taskType: "task" | "preparation" | "training" | "checkin"; ownerRole: string; ownerName?: string | null; dueOffsetDays: number; required: boolean };
+type EmployeePlanResource = { stageCode: string; resourceId: number; title: string; description: string | null; format: string; blobName: string | null; externalUrl: string | null; downloadUrl: string | null };
+
+function JourneyView({ resetVersion, employeeId }: { resetVersion: number; employeeId: number }) {
   const [selectedStage, setSelectedStage] = useState<number | null>(null);
-  const [taskOverrides, setTaskOverrides] = useState<Record<string, boolean>>({});
-  const [resolvedTasks, setResolvedTasks] = useState<string[]>([]);
+  const [taskOverrides, setTaskOverrides] = useLocalStorageState<Record<string, boolean>>(`onramp.taskOverrides.${employeeId}`, {});
+  const [resolvedTasks, setResolvedTasks] = useLocalStorageState<string[]>(`onramp.resolvedTasks.${employeeId}`, []);
   const [confirmingTask, setConfirmingTask] = useState<string | null>(null);
   const [reportingTask, setReportingTask] = useState<string | null>(null);
   const [issueText, setIssueText] = useState("");
-  const [reportedIssues, setReportedIssues] = useState<{ title: string; description: string }[]>([]);
+  const [reportedIssues, setReportedIssues] = useLocalStorageState<{ title: string; description: string }[]>(`onramp.reportedIssues.${employeeId}`, []);
   useEffect(() => setSelectedStage(null), [resetVersion]);
   const initialPreparationProgress = Math.round(
     (preparationItems.filter((item) => item.status === "Concluído").length / preparationItems.length) * 100,
   );
-  const [preparationProgress, setPreparationProgress] = useState(initialPreparationProgress);
+  const [preparationProgress, setPreparationProgress] = useLocalStorageState(`onramp.preparationProgress.${employeeId}`, initialPreparationProgress);
+  const [accountPlan, setAccountPlan] = useState<{ configured: boolean; tasks: EmployeePlanTask[]; resources: EmployeePlanResource[] }>({ configured: false, tasks: [], resources: [] });
+  useEffect(() => {
+    fetch("/api/me/plan")
+      .then(async (response) => {
+        if (!response.ok) throw new Error("Could not load this employee plan.");
+        return response.json();
+      })
+      .then((result: { configured: boolean; tasks: EmployeePlanTask[]; resources: EmployeePlanResource[] }) => setAccountPlan(result))
+      .catch(() => setAccountPlan({ configured: false, tasks: [], resources: [] }));
+  }, [employeeId]);
+
+  const journeyStages = defaultJourneyStages.map((stage) => {
+    const assignedTasks = accountPlan.tasks.filter((task) => task.stageCode === stage.code);
+    const assignedResources = accountPlan.resources.filter((resource) => resource.stageCode === stage.code);
+    return {
+      ...stage,
+      tasks: accountPlan.configured ? assignedTasks.map((task): StageTask => ({
+        title: task.title,
+        description: task.dueOffsetDays ? `${task.description} Prazo: até o dia ${task.dueOffsetDays}.` : task.description,
+        completed: false,
+        category: task.category,
+        icon: task.taskType === "training" ? "book" : task.taskType === "checkin" ? "calendar" : task.taskType === "preparation" ? "tools" : "check",
+        owner: task.ownerName ?? task.ownerRole,
+        required: task.required,
+      })) : stage.tasks,
+      materials: accountPlan.configured ? assignedResources.map((resource) => resource.title) : stage.materials,
+    };
+  });
+  useEffect(() => {
+    if (!accountPlan.configured) return;
+    const requiredTasks = accountPlan.tasks.filter((task) => task.stageCode === "pre-entry" && task.required);
+    const completed = requiredTasks.filter((task) => taskOverrides[`0:${task.title}`]).length;
+    setPreparationProgress(requiredTasks.length ? Math.round((completed / requiredTasks.length) * 100) : 100);
+  }, [accountPlan, employeeId]);
   const getCurrentStageProgress = (stageIndex: number) => {
-    const tasks = journeyStages[stageIndex].tasks;
+    const tasks = journeyStages[stageIndex].tasks.filter(({ required }) => required !== false);
     const completed = tasks.filter(({ title, completed: initialState }) => taskOverrides[`${stageIndex}:${title}`] ?? initialState).length;
-    return Math.round((completed / tasks.length) * 100);
+    return tasks.length ? Math.round((completed / tasks.length) * 100) : journeyStages[stageIndex].tasks.length ? 100 : 0;
   };
 
   if (selectedStage !== null) {
@@ -33,7 +72,7 @@ function JourneyView({ resetVersion }: { resetVersion: number }) {
     const doneTasks = detail.tasks.filter(isTaskDone).length;
     const overdueTasks = detail.tasks.filter((task) => task.overdue && !isTaskDone(task)).length;
     const pendingTasks = detail.tasks.length - doneTasks - overdueTasks;
-    const progress = selectedStage === 0 ? preparationProgress : Math.round((doneTasks / detail.tasks.length) * 100);
+    const progress = selectedStage === 0 ? preparationProgress : getCurrentStageProgress(selectedStage);
     return (
       <section>
         <button className="journey-detail__back" onClick={() => setSelectedStage(null)}><Icon name="arrow" size={17} /> Voltar para minha jornada</button>
@@ -63,9 +102,15 @@ function JourneyView({ resetVersion }: { resetVersion: number }) {
           <div className="content-panel">
             <p className="eyebrow">Materiais de apoio</p>
             <div className="mt-4 grid grid-cols-2 gap-2">
-              {detail.materials.map((material) => (
-                <button className="journey-detail__material" key={material}><span><Icon name="book" size={16} /></span><strong>{material}</strong><Icon name="chevron" size={14} /></button>
-              ))}
+              {detail.materials.map((material) => {
+                const resource = accountPlan.resources.find((item) => item.stageCode === detail.code && item.title === material);
+                const resourceUrl = resource?.externalUrl ?? resource?.downloadUrl ?? (resource?.blobName ? `/${resource.blobName}` : null);
+                const content = <><span><Icon name="book" size={16} /></span><strong>{material}</strong><Icon name="chevron" size={14} /></>;
+                return resourceUrl
+                  ? <a className="journey-detail__material" href={resourceUrl} key={material} rel="noreferrer" target="_blank">{content}</a>
+                  : <button className="journey-detail__material" key={material} type="button">{content}</button>;
+              })}
+              {detail.materials.length === 0 && <p className="col-span-2 rounded-xl bg-[#fafafe] p-4 text-sm text-[#85879a]">Nenhum material foi associado a esta etapa.</p>}
             </div>
           </div>
 
@@ -81,8 +126,8 @@ function JourneyView({ resetVersion }: { resetVersion: number }) {
               ]}
             />
             <div className="task-card-list journey-detail__task-list">
-              {detail.tasks.map((task) => {
-                const { title, description, completed: initiallyDone, category, icon, owner } = task;
+              {detail.tasks.length ? detail.tasks.map((task) => {
+                const { title, description, completed: initiallyDone, category, icon, owner, required } = task;
                 const key = taskKey(title);
                 const done = taskOverrides[key] ?? initiallyDone;
                 const resolved = resolvedTasks.includes(key);
@@ -93,12 +138,13 @@ function JourneyView({ resetVersion }: { resetVersion: number }) {
                   detail={description}
                   category={category}
                   owner={owner}
+                  required={required}
                   icon={icon}
                   status={status}
                   onReport={() => { setReportingTask(key); setIssueText(""); }}
                   onResolve={!done && !resolved ? () => setConfirmingTask(key) : undefined}
                 />;
-              })}
+              }) : <p className="rounded-xl border border-dashed border-[#dedeeb] bg-[#fafafe] p-6 text-center text-sm text-[#85879a]">Nenhuma tarefa foi associada a esta etapa.</p>}
             </div>
             {reportingTask && (
               <form className="journey-issue" onSubmit={(event) => {
@@ -122,6 +168,9 @@ function JourneyView({ resetVersion }: { resetVersion: number }) {
 
         <div className={selectedStage === 0 ? "" : "hidden"}>
           <PreOnboardingPanel
+            employeeId={employeeId}
+            useCustomPlan={accountPlan.configured}
+            plannedTasks={detail.tasks}
             onProgressChange={(completed, total) => setPreparationProgress(Math.round((completed / total) * 100))}
           />
         </div>

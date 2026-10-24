@@ -13,6 +13,23 @@ WHERE NOT EXISTS (
   SELECT 1 FROM public.Departments AS existing WHERE existing.Name = source.Name
 );
 
+/* Test accounts for local development only. Passwords are stored as scrypt hashes. */
+INSERT INTO public.Employees (Email, Full_Name, Job_Title, Department_Id, Password_Hash, Is_HR_Admin)
+SELECT source.Email, source.Full_Name, source.Job_Title, department.Department_Id, source.Password_Hash, source.Is_HR_Admin
+FROM (VALUES
+  ('fenrir1@gmail.com', 'Fenrir Teste 1', 'Product Analyst', 'Produto', 'scrypt$ad5274939831c532dde70cea2ddb59fe$8d4facf18c8f0cde72b0598d0acff3ad7ba820f3b14bc9874bb9a3349ce1ff8d0fa22f8251e1afaeea4a27589291ddadb3685ca417064bfa35832cbfea755eba', FALSE),
+  ('fenrir2@gmail.com', 'Fenrir Teste 2', 'Software Engineer', 'Tecnologia', 'scrypt$8354c10e74308344a37041c807ed8d9f$0aae51cce89f8de8ac0cbdc07f41eddb2e16141a729ab22f3772e653e9657543de289349996578a1b9e1e2dd9ee4c5ae86019b5bf29cce41ddc9f3de403e443f', FALSE),
+  ('fenrir3@gmail.com', 'Fenrir Teste 3', 'People Analyst', 'Pessoas & Cultura', 'scrypt$04fccac1c5181837f7560683f26bf1e3$cac9f7835b7d06819f0274d397546160abb76de2ae9c0e073a099f0d3bab5f6fd45f78fd5bb698423129208e703d77068c348b37b332a354b018e75f6f0b7bb4', TRUE)
+) AS source(Email, Full_Name, Job_Title, Department_Name, Password_Hash, Is_HR_Admin)
+INNER JOIN public.Departments AS department ON department.Name = source.Department_Name
+ON CONFLICT (Email) DO UPDATE
+SET Full_Name = EXCLUDED.Full_Name,
+    Job_Title = EXCLUDED.Job_Title,
+    Department_Id = EXCLUDED.Department_Id,
+    Password_Hash = EXCLUDED.Password_Hash,
+    Is_HR_Admin = EXCLUDED.Is_HR_Admin,
+    Is_Active = TRUE;
+
 INSERT INTO public.Stage_Templates (Stage_Code, Name, Description, Display_Order, Duration_Label, Owner_Department_Id)
 SELECT source.Stage_Code, source.Name, source.Description, source.Display_Order, source.Duration_Label, department.Department_Id
 FROM (VALUES

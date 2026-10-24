@@ -1,5 +1,5 @@
 /*
-  OnRamp onboarding database — Azure Database for PostgreSQL Flexible Server
+  OnRamp onboarding database — local PostgreSQL for development
   Run once against an empty database. All timestamps are stored in UTC.
 */
 
@@ -237,7 +237,6 @@ CREATE TABLE public.Resources (
   Description VARCHAR(1200) NULL,
   Format VARCHAR(40) NOT NULL,
   Mime_Type VARCHAR(120) NULL,
-  Estimated_Minutes SMALLINT NULL,
   Owner_Department_Id INT NULL,
   Owner_Employee_Id INT NULL,
   Blob_Name VARCHAR(500) NULL,
@@ -250,8 +249,7 @@ CREATE TABLE public.Resources (
   CONSTRAINT FK_Resources_Employees FOREIGN KEY (Owner_Employee_Id) REFERENCES public.Employees (Employee_Id),
   CONSTRAINT CK_Resources_Status CHECK (Status IN ('draft', 'published', 'archived')),
   CONSTRAINT CK_Resources_Location CHECK (Blob_Name IS NULL OR External_Url IS NULL),
-  CONSTRAINT CK_Resources_Published_Location CHECK (Status <> 'published' OR Blob_Name IS NOT NULL OR External_Url IS NOT NULL),
-  CONSTRAINT CK_Resources_Estimated_Minutes CHECK (Estimated_Minutes IS NULL OR Estimated_Minutes >= 0)
+  CONSTRAINT CK_Resources_Published_Location CHECK (Status <> 'published' OR Blob_Name IS NOT NULL OR External_Url IS NOT NULL)
 );
 
 CREATE INDEX IX_Resources_Category_Status ON public.Resources (Resource_Category_Id, Status);

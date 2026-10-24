@@ -6,7 +6,7 @@ React + Vite + Tailwind CSS v4 application.
 
 - Start the development server with `npm run dev`.
 - Vite serves the app on port `8443` by default; `PORT` can override it.
-- API requests under `/api` proxy to `http://127.0.0.1:3000` by default. Set `API_PROXY_TARGET` to override it.
+- Local development runs the Vite client and Express API together with `npm run dev`. PostgreSQL connection settings live in the ignored `.env` file; copy `.env.example` to get started.
 
 ## Project structure
 
@@ -16,8 +16,9 @@ React + Vite + Tailwind CSS v4 application.
 - `src/components/` contains reusable UI components.
 - `src/styles/` contains page and component styles.
 - `src/data/` contains prototype data.
-- `server/` contains the Express API.
-- `database/postgresql/` contains the PostgreSQL schema and seed scripts.
+- `server/` contains the local Express API and PostgreSQL connection.
+- `database/postgresql/` contains the PostgreSQL schema and local seed scripts.
+- `scripts/setup-local-db.js` creates the local database and applies the schema and seed.
 - `index.html` is the Vite HTML shell.
 - `vite.config.ts` configures React, Tailwind, the `@` alias, and the local API proxy.
 - `.mise.toml` pins the Node.js version; npm ships with Node.js.
