@@ -1,14 +1,14 @@
 import { useMemo, useState } from "react";
 import "../styles/library.css";
-import { Icon, resources, type IconName } from "../components/shared";
+import { Icon, type IconName, type LibraryResource } from "../components/shared";
 import ResourceCard from "../components/ResourceCard";
 
-function ContentView({ query, setQuery, filtered }: { query: string; setQuery: (q: string) => void; filtered: typeof resources }) {
+function ContentView({ query, setQuery, resources, filtered, status }: { query: string; setQuery: (q: string) => void; resources: LibraryResource[]; filtered: LibraryResource[]; status: "loading" | "ready" | "error" }) {
   const [activeCategory, setActiveCategory] = useState("Todos");
   const [activeFormat, setActiveFormat] = useState("Todos");
 
-  const categories = useMemo(() => Array.from(new Set(resources.map((resource) => resource.category))), []);
-  const formats = useMemo(() => Array.from(new Set(resources.map((resource) => resource.meta.split(" • ")[0]))), []);
+  const categories = useMemo(() => Array.from(new Set(resources.map((resource) => resource.category))), [resources]);
+  const formats = useMemo(() => Array.from(new Set(resources.map((resource) => resource.meta.split(" • ")[0]))), [resources]);
   const categoryIcons: Record<string, IconName> = {
     Benefícios: "briefcase",
     Cultura: "people",
@@ -92,16 +92,20 @@ function ContentView({ query, setQuery, filtered }: { query: string; setQuery: (
           ))}
         </div>
 
-        {visibleResources.length > 0 ? (
+        {status === "loading" ? (
+          <div className="library-empty"><h3>Carregando materiais...</h3></div>
+        ) : status === "error" ? (
+          <div className="library-empty"><h3>Não foi possível carregar a biblioteca</h3><p>Confira sua conexão e atualize a página para tentar novamente.</p></div>
+        ) : visibleResources.length > 0 ? (
           <div className="library-resource-grid">
             {visibleResources.map((resource) => <ResourceCard key={resource.title} resource={resource} />)}
           </div>
         ) : (
           <div className="library-empty">
             <span className="library-empty__icon"><Icon name="search" size={23} /></span>
-            <h3>Nenhum conteúdo encontrado</h3>
-            <p>Tente mudar os filtros ou buscar por outro termo.</p>
-            <button className="library-empty__reset" onClick={clearFilters} type="button">Limpar busca e filtros</button>
+            <h3>{resources.length === 0 ? "Ainda não há materiais na biblioteca" : "Nenhum conteúdo encontrado"}</h3>
+            <p>{resources.length === 0 ? "O RH poderá adicionar materiais para as pessoas da empresa." : "Tente mudar os filtros ou buscar por outro termo."}</p>
+            {resources.length > 0 && <button className="library-empty__reset" onClick={clearFilters} type="button">Limpar busca e filtros</button>}
           </div>
         )}
       </section>

@@ -1,9 +1,9 @@
 import "../styles/dashboard.css";
 import { useEffect, useMemo, useState } from "react";
-import { Brand, Icon, resources, type IconName } from "./shared";
+import { Brand, Icon, type IconName, type LibraryResource } from "./shared";
 import HomeView from "../views/HomeView";
 import ContentView from "../views/ContentView";
-import JourneyView from "../views/JourneyView";
+import JourneyView from "../views/EmployeeJourneyView";
 import PeopleView from "../views/PeopleView";
 import HrPlansView from "../views/HrPlansView";
 import type { AuthenticatedEmployee } from "./Login";
@@ -13,10 +13,18 @@ function Dashboard({ employee, onLogout }: { employee: AuthenticatedEmployee; on
   const [activeNav, setActiveNav] = useState(employee.isHrAdmin ? "Pessoas da empresa" : "Início");
   const [mobileMenu, setMobileMenu] = useState(false);
   const [journeyResetVersion, setJourneyResetVersion] = useState(0);
-  const [databaseResources, setDatabaseResources] = useState<typeof resources>(resources);
+  const [databaseResources, setDatabaseResources] = useState<LibraryResource[]>([]);
+  const [resourceStatus, setResourceStatus] = useState<"loading" | "ready" | "error">("loading");
+  const [databaseStages, setDatabaseStages] = useState<{ code: string; name: string; description: string; durationLabel: string | null }[]>([]);
+  const [employeePlanTasks, setEmployeePlanTasks] = useState<{ id: number; stageCode: string; title: string; description: string; required: boolean; completed: boolean; dueOffsetDays: number }[]>([]);
+  const [planStatus, setPlanStatus] = useState<"loading" | "ready" | "error">("loading");
 
   useEffect(() => {
-    if (employee.isHrAdmin) return;
+    if (employee.isHrAdmin) {
+      setResourceStatus("ready");
+      return;
+    }
+    setResourceStatus("loading");
     fetch("/api/resources")
       .then((response) => {
         if (!response.ok) throw new Error("Could not load local resources.");
@@ -28,29 +36,62 @@ function Dashboard({ employee, onLogout }: { employee: AuthenticatedEmployee; on
         format: string;
         category: string;
         owner_department: string | null;
-        blob_name: string | null;
         external_url: string | null;
         download_url: string | null;
       }[]) => {
-        const localResources = rows.map((row): (typeof resources)[number] => {
-          const prototypeResource = resources.find(({ title }) => title === row.title);
+        const categoryPresentation: Record<string, Pick<LibraryResource, "icon" | "tone">> = {
+          Benefícios: { icon: "briefcase", tone: "indigo" },
+          Cultura: { icon: "people", tone: "purple" },
+          Ferramentas: { icon: "tools", tone: "orange" },
+          Financeiro: { icon: "briefcase", tone: "orange" },
+          Onboarding: { icon: "sparkle", tone: "indigo" },
+          Políticas: { icon: "book", tone: "blue" },
+        };
+        setDatabaseResources(rows.map((row) => {
+          const presentation = categoryPresentation[row.category] ?? { icon: "book", tone: "blue" };
           return {
             title: row.title,
             category: row.category,
             meta: row.format,
             description: row.description ?? "",
-            owner: row.owner_department ?? prototypeResource?.owner ?? "OnRamp",
-            icon: prototypeResource?.icon ?? "book",
-            tone: prototypeResource?.tone ?? "indigo",
-            downloadUrl: row.external_url ?? row.download_url ?? (row.blob_name ? `/${row.blob_name}` : prototypeResource?.downloadUrl ?? "#"),
+            owner: row.owner_department ?? "OnRamp",
+            ...presentation,
+            downloadUrl: row.external_url ?? row.download_url,
+            isExternalLink: Boolean(row.external_url),
           };
-        });
-        if (localResources.length > 0) setDatabaseResources(localResources);
+        }));
+        setResourceStatus("ready");
       })
       .catch(() => {
-        // Use the bundled prototype catalog while the local API is unavailable.
+        setDatabaseResources([]);
+        setResourceStatus("error");
       });
   }, [employee.isHrAdmin]);
+
+  useEffect(() => {
+    if (employee.isHrAdmin) return;
+    const controller = new AbortController();
+    setPlanStatus("loading");
+    Promise.all([
+      fetch("/api/stages", { signal: controller.signal }).then(async (response) => {
+        const result = await response.json();
+        if (!response.ok) throw new Error(result.error ?? "Could not load onboarding stages.");
+        return result as { code: string; name: string; description: string | null; duration_label: string | null }[];
+      }),
+      fetch("/api/me/plan", { signal: controller.signal }).then(async (response) => {
+        const result = await response.json();
+        if (!response.ok) throw new Error(result.error ?? "Could not load employee plan.");
+        return result as { tasks: { id: number; stageCode: string; title: string; description: string; required: boolean; completed: boolean; dueOffsetDays: number }[] };
+      }),
+    ]).then(([stages, plan]) => {
+      setDatabaseStages(stages.map((stage) => ({ code: stage.code, name: stage.name, description: stage.description ?? "", durationLabel: stage.duration_label })));
+      setEmployeePlanTasks(plan.tasks);
+      setPlanStatus("ready");
+    }).catch((error: unknown) => {
+      if (!(error instanceof DOMException && error.name === "AbortError")) setPlanStatus("error");
+    });
+    return () => controller.abort();
+  }, [employee.id, employee.isHrAdmin, activeNav]);
 
   const filtered = useMemo(
     () => databaseResources.filter((item) => `${item.title} ${item.category} ${item.description} ${item.owner} ${item.meta}`.toLowerCase().includes(query.toLowerCase())),
@@ -121,11 +162,11 @@ function Dashboard({ employee, onLogout }: { employee: AuthenticatedEmployee; on
           ) : activeNav === "Pessoas & áreas" ? (
             <PeopleView />
           ) : activeNav === "Conteúdos" ? (
-            <ContentView query={query} setQuery={setQuery} filtered={filtered} />
+            <ContentView query={query} setQuery={setQuery} resources={databaseResources} filtered={filtered} status={resourceStatus} />
           ) : activeNav === "Minha jornada" ? (
             <JourneyView resetVersion={journeyResetVersion} employeeId={employee.id} />
           ) : (
-            <HomeView query={query} setQuery={setQuery} filtered={filtered} setActiveNav={setActiveNav} />
+            <HomeView employee={employee} stages={databaseStages} tasks={employeePlanTasks} planStatus={planStatus} query={query} setQuery={setQuery} resources={databaseResources} filtered={filtered} setActiveNav={setActiveNav} />
           )}
         </div>
       </div>

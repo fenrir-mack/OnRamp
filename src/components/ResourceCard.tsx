@@ -1,12 +1,9 @@
-import { Icon, resources } from "./shared";
+import { Icon, type LibraryResource } from "./shared";
 
-type Resource = (typeof resources)[number];
-
-function ResourceCard({ resource }: { resource: Resource }) {
+function ResourceCard({ resource }: { resource: LibraryResource }) {
   const [format] = resource.meta.split(" • ");
 
-  const downloadUrl =
-    "downloadUrl" in resource ? resource.downloadUrl : undefined;
+  const downloadUrl = resource.downloadUrl;
 
   return (
     <article className="library-resource">
@@ -22,10 +19,12 @@ function ResourceCard({ resource }: { resource: Resource }) {
             {downloadUrl && (
               <a
                 href={downloadUrl}
-                download
+                download={resource.isExternalLink ? undefined : true}
+                target={resource.isExternalLink ? "_blank" : undefined}
+                rel={resource.isExternalLink ? "noreferrer" : undefined}
                 className="library-resource__download"
-                aria-label={`Baixar ${resource.title}`}
-                title={`Baixar ${resource.title}`}
+                aria-label={`${resource.isExternalLink ? "Abrir" : "Baixar"} ${resource.title}`}
+                title={`${resource.isExternalLink ? "Abrir" : "Baixar"} ${resource.title}`}
               >
                 <Icon name="download" size={18} />
               </a>

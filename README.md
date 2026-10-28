@@ -123,3 +123,6 @@ Os scripts SQL ficam em `database/postgresql/` e são aplicados por `npm run db:
 - `009-resource-files.sql` e `010-remove-resource-estimated-minutes.sql`: metadados dos arquivos e ajuste do modelo de materiais.
 - `011-hr-task-presets.sql` e `012-task-responsible-people.sql`: pacotes de tarefas e responsáveis.
 - `013-seed-pre-entry-presets.sql`: pacotes iniciais de pré-entrada.
+- `014-employee-organization.sql`: permite associar cada pessoa a várias áreas e equipes independentes.
+- `015-team-hierarchies.sql`: permite equipes subordinadas e vários líderes por equipe.
+- `016-employee-plan-progress.sql`: persiste conclusões de tarefas e problemas informados nas jornadas individuais.

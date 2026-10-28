@@ -14,17 +14,6 @@ const app = express();
 const port = Number(process.env.API_PORT ?? 3000);
 const fileStorageDirectory = path.resolve(process.env.ONRAMP_FILE_STORAGE_PATH ?? path.join(process.cwd(), "storage", "files"));
 const maximumResourceFileSize = 25 * 1024 * 1024;
-const allowedFileTypes = new Set([
-  "application/pdf",
-  "application/vnd.openxmlformats-officedocument.wordprocessingml.document",
-  "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
-  "application/vnd.openxmlformats-officedocument.presentationml.presentation",
-  "text/plain",
-  "text/csv",
-  "image/jpeg",
-  "image/png",
-  "image/webp",
-]);
 const taskCategoryLabels = { task: "Tarefa", preparation: "Preparação", training: "Treinamento", checkin: "Check-in" };
 
 app.disable("x-powered-by");
@@ -97,13 +86,19 @@ app.get("/api/me/plan", requireAuthenticated, async (request, response) => {
   try {
     const [taskResult, resourceResult] = await Promise.all([
       pool.query(`
-        SELECT stage.stage_code AS "stageCode", plan_task.title, plan_task.description,
+        SELECT plan_task.employee_plan_task_id AS id, stage.stage_code AS "stageCode", plan_task.title, plan_task.description,
           plan_task.category, plan_task.task_type AS "taskType", plan_task.owner_role AS "ownerRole",
           plan_task.owner_employee_id AS "ownerEmployeeId", task_owner.full_name AS "ownerName",
-          plan_task.due_offset_days AS "dueOffsetDays", plan_task.is_required AS required
+          plan_task.due_offset_days AS "dueOffsetDays", plan_task.is_required AS required,
+          COALESCE(progress.is_completed, FALSE) AS completed,
+          COALESCE((SELECT json_agg(json_build_object('id', issue.employee_plan_task_issue_id, 'description', issue.description, 'createdAt', issue.created_at) ORDER BY issue.created_at DESC)
+            FROM public.employee_plan_task_issues AS issue
+            WHERE issue.employee_plan_task_id = plan_task.employee_plan_task_id AND issue.employee_id = $1), '[]'::json) AS issues
         FROM public.employee_plan_tasks AS plan_task
         INNER JOIN public.stage_templates AS stage ON stage.stage_template_id = plan_task.stage_template_id
         LEFT JOIN public.employees AS task_owner ON task_owner.employee_id = plan_task.owner_employee_id
+        LEFT JOIN public.employee_plan_task_progress AS progress
+          ON progress.employee_plan_task_id = plan_task.employee_plan_task_id AND progress.employee_id = $1
         WHERE plan_task.employee_id = $1
         ORDER BY stage.display_order, plan_task.display_order, plan_task.employee_plan_task_id;
       `, [employeeId]),
@@ -128,6 +123,47 @@ app.get("/api/me/plan", requireAuthenticated, async (request, response) => {
   }
 });
 
+app.patch("/api/me/plan/tasks/:taskId", requireAuthenticated, async (request, response) => {
+  const taskId = parseAccountId(request.params.taskId);
+  const completed = request.body?.completed;
+  if (!taskId || typeof completed !== "boolean") return response.status(400).json({ error: "Informe uma tarefa e seu estado de conclusão." });
+  const employeeId = request.authenticatedEmployee.employee_id;
+  try {
+    const task = await pool.query("SELECT 1 FROM public.employee_plan_tasks WHERE employee_plan_task_id = $1 AND employee_id = $2", [taskId, employeeId]);
+    if (!task.rowCount) return response.status(404).json({ error: "Tarefa não encontrada na sua jornada." });
+    await pool.query(`
+      INSERT INTO public.employee_plan_task_progress (employee_plan_task_id, employee_id, is_completed, completed_at, updated_at)
+      VALUES ($1, $2, $3, CASE WHEN $3 THEN CURRENT_TIMESTAMP ELSE NULL END, CURRENT_TIMESTAMP)
+      ON CONFLICT (employee_plan_task_id) DO UPDATE
+      SET is_completed = EXCLUDED.is_completed, completed_at = EXCLUDED.completed_at, updated_at = CURRENT_TIMESTAMP
+    `, [taskId, employeeId, completed]);
+    return response.json({ id: taskId, completed });
+  } catch (error) {
+    console.error("Could not save employee task progress:", error.message);
+    return response.status(500).json({ error: "Não foi possível salvar o progresso da tarefa." });
+  }
+});
+
+app.post("/api/me/plan/tasks/:taskId/issues", requireAuthenticated, async (request, response) => {
+  const taskId = parseAccountId(request.params.taskId);
+  const description = typeof request.body?.description === "string" ? request.body.description.trim() : "";
+  if (!taskId || !description || description.length > 2000) return response.status(400).json({ error: "Descreva o problema em até 2.000 caracteres." });
+  const employeeId = request.authenticatedEmployee.employee_id;
+  try {
+    const task = await pool.query("SELECT 1 FROM public.employee_plan_tasks WHERE employee_plan_task_id = $1 AND employee_id = $2", [taskId, employeeId]);
+    if (!task.rowCount) return response.status(404).json({ error: "Tarefa não encontrada na sua jornada." });
+    const result = await pool.query(`
+      INSERT INTO public.employee_plan_task_issues (employee_plan_task_id, employee_id, description)
+      VALUES ($1, $2, $3)
+      RETURNING employee_plan_task_issue_id AS id, description, created_at AS "createdAt"
+    `, [taskId, employeeId, description]);
+    return response.status(201).json(result.rows[0]);
+  } catch (error) {
+    console.error("Could not save employee task issue:", error.message);
+    return response.status(500).json({ error: "Não foi possível enviar o problema." });
+  }
+});
+
 async function requireHr(request, response, next) {
   try {
     const employee = await findSessionEmployee(request);
@@ -146,6 +182,87 @@ async function requireHr(request, response, next) {
 function parseAccountId(value) {
   const accountId = Number(value);
   return Number.isSafeInteger(accountId) && accountId > 0 ? accountId : null;
+}
+
+function parseOrganizationIds(value, legacyId) {
+  const values = Array.isArray(value) ? value : legacyId == null || legacyId === "" ? [] : [legacyId];
+  if (values.length > 100) return null;
+  const ids = values.map(Number);
+  if (ids.some((id) => !Number.isSafeInteger(id) || id <= 0)) return null;
+  return [...new Set(ids)];
+}
+
+async function validateOrganizationIds(departmentIds, teamIds) {
+  if (departmentIds === null || teamIds === null) return "Selecione áreas e equipes válidas.";
+  const [departments, teams] = await Promise.all([
+    departmentIds.length ? pool.query("SELECT department_id FROM public.departments WHERE department_id = ANY($1::int[])", [departmentIds]) : { rowCount: 0 },
+    teamIds.length ? pool.query("SELECT team_id FROM public.teams WHERE is_active IS TRUE AND team_id = ANY($1::int[])", [teamIds]) : { rowCount: 0 },
+  ]);
+  if (departments.rowCount !== departmentIds.length) return "Uma ou mais áreas selecionadas não existem.";
+  if (teams.rowCount !== teamIds.length) return "Uma ou mais equipes selecionadas não existem ou estão inativas.";
+  return null;
+}
+
+async function validateActiveEmployeeIds(employeeIds) {
+  if (employeeIds === null) return "Selecione pessoas válidas para a equipe.";
+  const people = employeeIds.length
+    ? await pool.query("SELECT employee_id FROM public.employees WHERE is_active IS TRUE AND employee_id = ANY($1::int[])", [employeeIds])
+    : { rowCount: 0 };
+  return people.rowCount === employeeIds.length ? null : "Uma ou mais pessoas selecionadas não existem ou estão inativas.";
+}
+
+async function validateTeamParent(parentTeamId, teamId = null) {
+  if (parentTeamId === null) return null;
+  const parent = await pool.query("SELECT 1 FROM public.teams WHERE team_id = $1 AND is_active IS TRUE", [parentTeamId]);
+  if (!parent.rowCount) return "A equipe superior não existe ou está inativa.";
+  if (teamId === null) return null;
+  const descendant = await pool.query(`
+    WITH RECURSIVE descendants AS (
+      SELECT team_id FROM public.teams WHERE parent_team_id = $1
+      UNION ALL
+      SELECT team.team_id FROM public.teams AS team
+      INNER JOIN descendants ON team.parent_team_id = descendants.team_id
+    )
+    SELECT 1 FROM descendants WHERE team_id = $2 LIMIT 1
+  `, [teamId, parentTeamId]);
+  return descendant.rowCount ? "Uma equipe não pode ficar subordinada a ela mesma ou a uma subequipe sua." : null;
+}
+
+async function saveTeamPeople(client, teamId, memberIds, leaderIds) {
+  const allMemberIds = [...new Set([...memberIds, ...leaderIds])];
+  await client.query("DELETE FROM public.team_leaders WHERE team_id = $1", [teamId]);
+  await client.query("DELETE FROM public.employee_teams WHERE team_id = $1", [teamId]);
+  await client.query("UPDATE public.teams SET lead_employee_id = $2 WHERE team_id = $1", [teamId, leaderIds[0] ?? null]);
+  for (const leaderId of leaderIds) {
+    await client.query("INSERT INTO public.team_leaders (team_id, employee_id) VALUES ($1, $2)", [teamId, leaderId]);
+  }
+  for (const memberId of allMemberIds) {
+    await client.query(`
+      INSERT INTO public.employee_teams (employee_id, team_id, team_role)
+      VALUES ($1, $2, CASE WHEN $3::int[] @> ARRAY[$1] THEN 'Líder' ELSE NULL END)
+    `, [memberId, teamId, leaderIds]);
+  }
+}
+
+async function saveEmployeeOrganization(client, employeeId, departmentIds, teamIds) {
+  await client.query("DELETE FROM public.employee_departments WHERE employee_id = $1", [employeeId]);
+  await client.query("DELETE FROM public.employee_teams WHERE employee_id = $1", [employeeId]);
+  for (const [index, departmentId] of departmentIds.entries()) {
+    await client.query(`
+      INSERT INTO public.employee_departments (employee_id, department_id, is_primary)
+      VALUES ($1, $2, $3)
+    `, [employeeId, departmentId, index === 0]);
+  }
+  const leaderTeams = await client.query("SELECT team_id FROM public.team_leaders WHERE employee_id = $1", [employeeId]);
+  const assignedTeamIds = [...new Set([...teamIds, ...leaderTeams.rows.map(({ team_id }) => team_id)])];
+  for (const teamId of assignedTeamIds) {
+    await client.query(`
+      INSERT INTO public.employee_teams (employee_id, team_id, team_role)
+      VALUES ($1, $2, CASE WHEN EXISTS (
+        SELECT 1 FROM public.team_leaders WHERE employee_id = $1 AND team_id = $2
+      ) THEN 'Líder' ELSE NULL END)
+    `, [employeeId, teamId]);
+  }
 }
 
 async function hashPassword(password) {
@@ -283,15 +400,33 @@ app.get("/api/hr/accounts", requireHr, async (_request, response) => {
     const result = await pool.query(`
       SELECT employee.employee_id AS id, employee.full_name AS name, employee.email,
         employee.job_title AS "jobTitle", employee.department_id AS "departmentId",
-        department.name AS department, employee.manager_employee_id AS "managerEmployeeId",
+        (SELECT string_agg(department.name, ', ' ORDER BY department.name)
+          FROM public.employee_departments AS membership
+          INNER JOIN public.departments AS department ON department.department_id = membership.department_id
+          WHERE membership.employee_id = employee.employee_id) AS department,
+        COALESCE((SELECT json_agg(membership.department_id ORDER BY department.name)
+          FROM public.employee_departments AS membership
+          INNER JOIN public.departments AS department ON department.department_id = membership.department_id
+          WHERE membership.employee_id = employee.employee_id), '[]'::json) AS "departmentIds",
+        COALESCE((SELECT json_agg(department.name ORDER BY department.name)
+          FROM public.employee_departments AS membership
+          INNER JOIN public.departments AS department ON department.department_id = membership.department_id
+          WHERE membership.employee_id = employee.employee_id), '[]'::json) AS departments,
+        COALESCE((SELECT json_agg(membership.team_id ORDER BY team.name)
+          FROM public.employee_teams AS membership
+          INNER JOIN public.teams AS team ON team.team_id = membership.team_id
+          WHERE membership.employee_id = employee.employee_id AND team.is_active IS TRUE), '[]'::json) AS "teamIds",
+        COALESCE((SELECT json_agg(team.name ORDER BY team.name)
+          FROM public.employee_teams AS membership
+          INNER JOIN public.teams AS team ON team.team_id = membership.team_id
+          WHERE membership.employee_id = employee.employee_id AND team.is_active IS TRUE), '[]'::json) AS teams,
+        employee.manager_employee_id AS "managerEmployeeId",
         manager.full_name AS "managerName", employee.is_active AS "isActive",
-        COUNT(plan_task.employee_plan_task_id)::int AS "planTaskCount"
+        (SELECT COUNT(*)::int FROM public.employee_plan_tasks AS plan_task
+          WHERE plan_task.employee_id = employee.employee_id) AS "planTaskCount"
       FROM public.employees AS employee
-      LEFT JOIN public.departments AS department ON department.department_id = employee.department_id
       LEFT JOIN public.employees AS manager ON manager.employee_id = employee.manager_employee_id
-      LEFT JOIN public.employee_plan_tasks AS plan_task ON plan_task.employee_id = employee.employee_id
       WHERE employee.is_hr_admin IS FALSE
-      GROUP BY employee.employee_id, department.name, manager.full_name
       ORDER BY employee.full_name;
     `);
     return response.json(result.rows);
@@ -305,9 +440,12 @@ app.get("/api/hr/responsibles", requireHr, async (_request, response) => {
   try {
     const result = await pool.query(`
       SELECT employee.employee_id AS id, employee.full_name AS name,
-        employee.job_title AS "jobTitle", department.name AS department
+        employee.job_title AS "jobTitle",
+        (SELECT string_agg(department.name, ', ' ORDER BY department.name)
+          FROM public.employee_departments AS membership
+          INNER JOIN public.departments AS department ON department.department_id = membership.department_id
+          WHERE membership.employee_id = employee.employee_id) AS department
       FROM public.employees AS employee
-      LEFT JOIN public.departments AS department ON department.department_id = employee.department_id
       WHERE employee.is_active IS TRUE
       ORDER BY employee.full_name;
     `);
@@ -320,11 +458,177 @@ app.get("/api/hr/responsibles", requireHr, async (_request, response) => {
 
 app.get("/api/hr/departments", requireHr, async (_request, response) => {
   try {
-    const result = await pool.query("SELECT department_id AS id, name FROM public.departments ORDER BY name");
+    const result = await pool.query(`
+      SELECT department.department_id AS id, department.name, department.description,
+        COUNT(membership.employee_id)::int AS "memberCount"
+      FROM public.departments AS department
+      LEFT JOIN public.employee_departments AS membership ON membership.department_id = department.department_id
+      GROUP BY department.department_id
+      ORDER BY department.name;
+    `);
     return response.json(result.rows);
   } catch (error) {
     console.error("Could not load departments for HR:", error.message);
     return response.status(500).json({ error: "Não foi possível carregar as áreas." });
+  }
+});
+
+app.post("/api/hr/departments", requireHr, async (request, response) => {
+  const name = typeof request.body?.name === "string" ? request.body.name.trim() : "";
+  const description = typeof request.body?.description === "string" ? request.body.description.trim() : "";
+  if (!name || name.length > 100 || description.length > 300) return response.status(400).json({ error: "Informe o nome da área e uma descrição de até 300 caracteres." });
+  try {
+    const result = await pool.query(`
+      INSERT INTO public.departments (name, description) VALUES ($1, NULLIF($2, ''))
+      RETURNING department_id AS id, name, description, 0::int AS "memberCount"
+    `, [name, description]);
+    return response.status(201).json(result.rows[0]);
+  } catch (error) {
+    if (error.code === "23505") return response.status(409).json({ error: "Já existe uma área com esse nome." });
+    console.error("Could not create HR department:", error.message);
+    return response.status(500).json({ error: "Não foi possível criar a área." });
+  }
+});
+
+app.patch("/api/hr/departments/:departmentId", requireHr, async (request, response) => {
+  const departmentId = parseAccountId(request.params.departmentId);
+  const name = typeof request.body?.name === "string" ? request.body.name.trim() : "";
+  const description = typeof request.body?.description === "string" ? request.body.description.trim() : "";
+  if (!departmentId) return response.status(400).json({ error: "Área inválida." });
+  if (!name || name.length > 100 || description.length > 300) return response.status(400).json({ error: "Informe o nome da área e uma descrição de até 300 caracteres." });
+  try {
+    const result = await pool.query(`
+      UPDATE public.departments SET name = $2, description = NULLIF($3, '')
+      WHERE department_id = $1
+      RETURNING department_id AS id, name, description
+    `, [departmentId, name, description]);
+    if (!result.rowCount) return response.status(404).json({ error: "Área não encontrada." });
+    return response.json(result.rows[0]);
+  } catch (error) {
+    if (error.code === "23505") return response.status(409).json({ error: "Já existe uma área com esse nome." });
+    console.error("Could not update HR department:", error.message);
+    return response.status(500).json({ error: "Não foi possível atualizar a área." });
+  }
+});
+
+app.get("/api/hr/teams", requireHr, async (_request, response) => {
+  try {
+    const result = await pool.query(`
+      SELECT team.team_id AS id, team.name, team.description,
+        team.parent_team_id AS "parentTeamId", parent.name AS "parentTeamName",
+        COALESCE((SELECT json_agg(membership.employee_id ORDER BY employee.full_name)
+          FROM public.employee_teams AS membership
+          INNER JOIN public.employees AS employee ON employee.employee_id = membership.employee_id
+          WHERE membership.team_id = team.team_id), '[]'::json) AS "memberIds",
+        (SELECT COUNT(*)::int FROM public.employee_teams AS membership
+          WHERE membership.team_id = team.team_id) AS "memberCount",
+        COALESCE((SELECT json_agg(leader.employee_id ORDER BY employee.full_name)
+          FROM public.team_leaders AS leader
+          INNER JOIN public.employees AS employee ON employee.employee_id = leader.employee_id
+          WHERE leader.team_id = team.team_id), '[]'::json) AS "leaderIds",
+        COALESCE((SELECT json_agg(employee.full_name ORDER BY employee.full_name)
+          FROM public.team_leaders AS leader
+          INNER JOIN public.employees AS employee ON employee.employee_id = leader.employee_id
+          WHERE leader.team_id = team.team_id), '[]'::json) AS leaders
+      FROM public.teams AS team
+      LEFT JOIN public.teams AS parent ON parent.team_id = team.parent_team_id
+      WHERE team.is_active IS TRUE
+      ORDER BY parent.name NULLS FIRST, team.name;
+    `);
+    return response.json(result.rows);
+  } catch (error) {
+    console.error("Could not load HR teams:", error.message);
+    return response.status(500).json({ error: "Não foi possível carregar as equipes." });
+  }
+});
+
+app.post("/api/hr/teams", requireHr, async (request, response) => {
+  const name = typeof request.body?.name === "string" ? request.body.name.trim() : "";
+  const description = typeof request.body?.description === "string" ? request.body.description.trim() : "";
+  const rawParentTeamId = request.body?.parentTeamId;
+  const parentTeamId = rawParentTeamId == null || rawParentTeamId === "" ? null : parseAccountId(rawParentTeamId);
+  const memberIds = parseOrganizationIds(request.body?.memberIds);
+  const leaderIds = parseOrganizationIds(request.body?.leaderIds);
+  if (!name || name.length > 120 || description.length > 300) return response.status(400).json({ error: "Informe o nome da equipe e uma descrição de até 300 caracteres." });
+  if (rawParentTeamId != null && rawParentTeamId !== "" && parentTeamId === null) return response.status(400).json({ error: "Selecione uma equipe superior válida." });
+  const peopleError = await validateActiveEmployeeIds(memberIds === null || leaderIds === null ? null : [...new Set([...memberIds, ...leaderIds])]);
+  if (peopleError) return response.status(400).json({ error: peopleError });
+  try {
+    const parentError = await validateTeamParent(parentTeamId);
+    if (parentError) return response.status(400).json({ error: parentError });
+    const client = await pool.connect();
+    let transactionStarted = false;
+    try {
+      await client.query("BEGIN");
+      transactionStarted = true;
+      const result = await client.query(`
+        INSERT INTO public.teams (name, description, parent_team_id)
+        VALUES ($1, NULLIF($2, ''), $3)
+        RETURNING team_id AS id, name, description, parent_team_id AS "parentTeamId"
+      `, [name, description, parentTeamId]);
+      await saveTeamPeople(client, result.rows[0].id, memberIds, leaderIds);
+      await client.query("COMMIT");
+      transactionStarted = false;
+      return response.status(201).json({ ...result.rows[0], memberIds: [...new Set([...memberIds, ...leaderIds])], leaderIds });
+    } catch (error) {
+      if (transactionStarted) await client.query("ROLLBACK").catch(() => undefined);
+      throw error;
+    } finally {
+      client.release();
+    }
+  } catch (error) {
+    if (error.code === "23505") return response.status(409).json({ error: "Já existe uma equipe com esse nome." });
+    console.error("Could not create HR team:", error.message);
+    return response.status(500).json({ error: "Não foi possível criar a equipe." });
+  }
+});
+
+app.patch("/api/hr/teams/:teamId", requireHr, async (request, response) => {
+  const teamId = parseAccountId(request.params.teamId);
+  const name = typeof request.body?.name === "string" ? request.body.name.trim() : "";
+  const description = typeof request.body?.description === "string" ? request.body.description.trim() : "";
+  const rawParentTeamId = request.body?.parentTeamId;
+  const parentTeamId = rawParentTeamId == null || rawParentTeamId === "" ? null : parseAccountId(rawParentTeamId);
+  const memberIds = parseOrganizationIds(request.body?.memberIds);
+  const leaderIds = parseOrganizationIds(request.body?.leaderIds);
+  if (!teamId) return response.status(400).json({ error: "Equipe inválida." });
+  if (!name || name.length > 120 || description.length > 300) return response.status(400).json({ error: "Informe o nome da equipe e uma descrição de até 300 caracteres." });
+  if (rawParentTeamId != null && rawParentTeamId !== "" && parentTeamId === null) return response.status(400).json({ error: "Selecione uma equipe superior válida." });
+  if (parentTeamId === teamId) return response.status(400).json({ error: "Uma equipe não pode ser superior dela mesma." });
+  const peopleError = await validateActiveEmployeeIds(memberIds === null || leaderIds === null ? null : [...new Set([...memberIds, ...leaderIds])]);
+  if (peopleError) return response.status(400).json({ error: peopleError });
+  try {
+    const parentError = await validateTeamParent(parentTeamId, teamId);
+    if (parentError) return response.status(400).json({ error: parentError });
+    const client = await pool.connect();
+    let transactionStarted = false;
+    try {
+      await client.query("BEGIN");
+      transactionStarted = true;
+      const result = await client.query(`
+        UPDATE public.teams SET name = $2, description = NULLIF($3, ''), parent_team_id = $4
+        WHERE team_id = $1 AND is_active IS TRUE
+        RETURNING team_id AS id, name, description, parent_team_id AS "parentTeamId"
+      `, [teamId, name, description, parentTeamId]);
+      if (!result.rowCount) {
+        await client.query("ROLLBACK");
+        transactionStarted = false;
+        return response.status(404).json({ error: "Equipe não encontrada." });
+      }
+      await saveTeamPeople(client, teamId, memberIds, leaderIds);
+      await client.query("COMMIT");
+      transactionStarted = false;
+      return response.json({ ...result.rows[0], memberIds: [...new Set([...memberIds, ...leaderIds])], leaderIds });
+    } catch (error) {
+      if (transactionStarted) await client.query("ROLLBACK").catch(() => undefined);
+      throw error;
+    } finally {
+      client.release();
+    }
+  } catch (error) {
+    if (error.code === "23505") return response.status(409).json({ error: "Já existe uma equipe com esse nome." });
+    console.error("Could not update HR team:", error.message);
+    return response.status(500).json({ error: "Não foi possível atualizar a equipe." });
   }
 });
 
@@ -346,14 +650,14 @@ app.post("/api/hr/resources/upload", requireHr, express.raw({ type: "application
   const description = decodeHeader("x-resource-description").trim();
   const categorySlug = decodeHeader("x-resource-category").trim();
   const originalName = path.basename(decodeHeader("x-file-name").replaceAll("\\", "/"));
-  const mimeType = (request.get("x-file-type") ?? "").toLowerCase().split(";")[0].trim();
+  const mimeType = (request.get("x-file-type") ?? "application/octet-stream").toLowerCase().split(";")[0].trim() || "application/octet-stream";
   const contents = request.body;
   if (!Buffer.isBuffer(contents)) return response.status(400).json({ error: "Envie um arquivo válido." });
   if (!title || title.length > 180 || description.length > 1200 || !categorySlug || originalName.length < 1 || originalName.length > 255) {
     return response.status(400).json({ error: "Confira o título, a categoria, a descrição e o nome do arquivo." });
   }
   if (!contents.length || contents.length > maximumResourceFileSize) return response.status(400).json({ error: "O arquivo deve ter até 25 MB e não pode estar vazio." });
-  if (!allowedFileTypes.has(mimeType)) return response.status(400).json({ error: "Formato não permitido. Envie PDF, Office, TXT, CSV, JPEG, PNG ou WEBP." });
+  if (mimeType.length > 120) return response.status(400).json({ error: "O tipo do arquivo é inválido." });
   const client = await pool.connect();
   let storagePath;
   let fileWritten = false;
@@ -398,11 +702,170 @@ app.post("/api/hr/resources/upload", requireHr, express.raw({ type: "application
   }
 });
 
+app.post("/api/hr/resources/link", requireHr, async (request, response) => {
+  const title = typeof request.body?.title === "string" ? request.body.title.trim() : "";
+  const description = typeof request.body?.description === "string" ? request.body.description.trim() : "";
+  const categorySlug = typeof request.body?.categorySlug === "string" ? request.body.categorySlug.trim() : "";
+  const externalUrl = typeof request.body?.externalUrl === "string" ? request.body.externalUrl.trim() : "";
+  let parsedUrl;
+  try { parsedUrl = new URL(externalUrl); } catch { return response.status(400).json({ error: "Informe um link válido." }); }
+  if (!title || title.length > 180 || description.length > 1200 || !categorySlug || externalUrl.length > 1000 || !["http:", "https:"].includes(parsedUrl.protocol)) {
+    return response.status(400).json({ error: "Confira o título, a descrição, a categoria e o link do material." });
+  }
+  try {
+    const result = await pool.query(`
+      INSERT INTO public.resources (
+        resource_category_id, title, description, format, mime_type, owner_employee_id,
+        external_url, status
+      )
+      SELECT category.resource_category_id, $2, NULLIF($3, ''), 'LINK', 'text/uri-list', $4, $5, 'published'
+      FROM public.resource_categories AS category
+      WHERE category.slug = $1
+      RETURNING resource_id AS id
+    `, [categorySlug, title, description, request.authenticatedEmployee.employee_id, externalUrl]);
+    if (!result.rowCount) return response.status(400).json({ error: "A categoria selecionada não existe." });
+    return response.status(201).json({ id: result.rows[0].id, title, description: description || null, format: "LINK", external_url: externalUrl });
+  } catch (error) {
+    console.error("Could not store HR resource link:", error.message);
+    return response.status(500).json({ error: "Não foi possível salvar o link do material." });
+  }
+});
+
+app.patch("/api/hr/resources/:resourceId", requireHr, async (request, response) => {
+  const resourceId = parseAccountId(request.params.resourceId);
+  const title = typeof request.body?.title === "string" ? request.body.title.trim() : "";
+  const description = typeof request.body?.description === "string" ? request.body.description.trim() : "";
+  const categorySlug = typeof request.body?.categorySlug === "string" ? request.body.categorySlug.trim() : "";
+  const sourceType = request.body?.sourceType;
+  const externalUrl = typeof request.body?.externalUrl === "string" ? request.body.externalUrl.trim() : "";
+  if (!resourceId) return response.status(400).json({ error: "Material inválido." });
+  if (!title || title.length > 180 || description.length > 1200 || !categorySlug || !["file", "link"].includes(sourceType)) {
+    return response.status(400).json({ error: "Confira o título, a descrição, a categoria e o tipo do material." });
+  }
+  let parsedUrl;
+  if (sourceType === "link") {
+    try { parsedUrl = new URL(externalUrl); } catch { return response.status(400).json({ error: "Informe um link válido." }); }
+    if (externalUrl.length > 1000 || !["http:", "https:"].includes(parsedUrl.protocol)) return response.status(400).json({ error: "Informe um link HTTP ou HTTPS válido." });
+  }
+  const client = await pool.connect();
+  let oldStorageKey = null;
+  let transactionStarted = false;
+  try {
+    const category = await client.query("SELECT resource_category_id FROM public.resource_categories WHERE slug = $1", [categorySlug]);
+    if (!category.rowCount) return response.status(400).json({ error: "A categoria selecionada não existe." });
+    const existing = await client.query(`
+      SELECT resource.external_url, resource_file.storage_key
+      FROM public.resources AS resource
+      LEFT JOIN public.resource_files AS resource_file ON resource_file.resource_id = resource.resource_id
+      WHERE resource.resource_id = $1 AND resource.status = 'published'
+      FOR UPDATE OF resource
+    `, [resourceId]);
+    if (!existing.rowCount) return response.status(404).json({ error: "Material não encontrado ou não editável." });
+    if (sourceType === "file" && existing.rows[0].external_url) {
+      return response.status(400).json({ error: "Selecione um arquivo novo para trocar o link por arquivo." });
+    }
+    oldStorageKey = sourceType === "link" ? existing.rows[0].storage_key : null;
+    await client.query("BEGIN");
+    transactionStarted = true;
+    await client.query(`
+      UPDATE public.resources
+      SET resource_category_id = $2, title = $3, description = NULLIF($4, ''),
+        format = CASE WHEN $5 = 'link' THEN 'LINK' ELSE format END,
+        mime_type = CASE WHEN $5 = 'link' THEN 'text/uri-list' ELSE mime_type END,
+        external_url = CASE WHEN $5 = 'link' THEN $6 ELSE external_url END,
+        blob_name = CASE WHEN $5 = 'link' THEN NULL ELSE blob_name END,
+        owner_employee_id = COALESCE(owner_employee_id, $7),
+        updated_at = CURRENT_TIMESTAMP
+      WHERE resource_id = $1
+    `, [resourceId, category.rows[0].resource_category_id, title, description, sourceType, sourceType === "link" ? externalUrl : null, request.authenticatedEmployee.employee_id]);
+    if (sourceType === "link") await client.query("DELETE FROM public.resource_files WHERE resource_id = $1", [resourceId]);
+    await client.query("COMMIT");
+    transactionStarted = false;
+    if (oldStorageKey && /^[0-9a-f-]{36}$/i.test(oldStorageKey)) await unlink(path.join(fileStorageDirectory, oldStorageKey)).catch(() => undefined);
+    return response.json({ id: resourceId, title, description: description || null, category: categorySlug, format: sourceType === "link" ? "LINK" : undefined, external_url: sourceType === "link" ? externalUrl : null });
+  } catch (error) {
+    if (transactionStarted) await client.query("ROLLBACK").catch(() => undefined);
+    console.error("Could not update HR resource:", error.message);
+    return response.status(500).json({ error: "Não foi possível atualizar o material." });
+  } finally {
+    client.release();
+  }
+});
+
+app.put("/api/hr/resources/:resourceId/file", requireHr, express.raw({ type: "application/octet-stream", limit: maximumResourceFileSize }), async (request, response) => {
+  const resourceId = parseAccountId(request.params.resourceId);
+  const decodeHeader = (name) => {
+    try { return decodeURIComponent(request.get(name) ?? ""); } catch { return ""; }
+  };
+  const title = decodeHeader("x-resource-title").trim();
+  const description = decodeHeader("x-resource-description").trim();
+  const categorySlug = decodeHeader("x-resource-category").trim();
+  const originalName = path.basename(decodeHeader("x-file-name").replaceAll("\\", "/"));
+  const mimeType = (request.get("x-file-type") ?? "application/octet-stream").toLowerCase().split(";")[0].trim() || "application/octet-stream";
+  const contents = request.body;
+  if (!resourceId || !Buffer.isBuffer(contents) || !title || title.length > 180 || description.length > 1200 || !categorySlug || !originalName || originalName.length > 255 || mimeType.length > 120) {
+    return response.status(400).json({ error: "Confira os dados do material e o arquivo selecionado." });
+  }
+  if (!contents.length || contents.length > maximumResourceFileSize) return response.status(400).json({ error: "O arquivo deve ter até 25 MB e não pode estar vazio." });
+  const client = await pool.connect();
+  let storagePath;
+  let fileWritten = false;
+  let transactionStarted = false;
+  let oldStorageKey = null;
+  try {
+    const category = await client.query("SELECT resource_category_id FROM public.resource_categories WHERE slug = $1", [categorySlug]);
+    if (!category.rowCount) return response.status(400).json({ error: "A categoria selecionada não existe." });
+    const existing = await client.query(`
+      SELECT resource_file.storage_key
+      FROM public.resources AS resource
+      LEFT JOIN public.resource_files AS resource_file ON resource_file.resource_id = resource.resource_id
+      WHERE resource.resource_id = $1 AND resource.status = 'published'
+    `, [resourceId]);
+    if (!existing.rowCount) return response.status(404).json({ error: "Material não encontrado ou não editável." });
+    oldStorageKey = existing.rows[0].storage_key;
+    const storageKey = randomUUID();
+    storagePath = path.join(fileStorageDirectory, storageKey);
+    const extension = path.extname(originalName).slice(1).toUpperCase() || "ARQUIVO";
+    await mkdir(fileStorageDirectory, { recursive: true });
+    await writeFile(storagePath, contents, { flag: "wx", mode: 0o600 });
+    fileWritten = true;
+    await client.query("BEGIN");
+    transactionStarted = true;
+    await client.query(`
+      UPDATE public.resources
+      SET resource_category_id = $2, title = $3, description = NULLIF($4, ''),
+        format = $5, mime_type = $6, external_url = NULL, blob_name = $7,
+        owner_employee_id = COALESCE(owner_employee_id, $8),
+        status = 'published', updated_at = CURRENT_TIMESTAMP
+      WHERE resource_id = $1
+    `, [resourceId, category.rows[0].resource_category_id, title, description, extension, mimeType, `private:${storageKey}`, request.authenticatedEmployee.employee_id]);
+    await client.query("DELETE FROM public.resource_files WHERE resource_id = $1", [resourceId]);
+    await client.query(`
+      INSERT INTO public.resource_files (
+        resource_id, storage_key, original_file_name, mime_type, size_bytes, sha256, uploaded_by
+      ) VALUES ($1, $2, $3, $4, $5, $6, $7)
+    `, [resourceId, storageKey, originalName, mimeType, contents.length, createHash("sha256").update(contents).digest("hex"), request.authenticatedEmployee.employee_id]);
+    await client.query("COMMIT");
+    transactionStarted = false;
+    if (oldStorageKey && /^[0-9a-f-]{36}$/i.test(oldStorageKey)) await unlink(path.join(fileStorageDirectory, oldStorageKey)).catch(() => undefined);
+    return response.json({ id: resourceId, title, description: description || null, format: extension, mime_type: mimeType });
+  } catch (error) {
+    if (transactionStarted) await client.query("ROLLBACK").catch(() => undefined);
+    if (fileWritten) await unlink(storagePath).catch(() => undefined);
+    console.error("Could not replace HR resource file:", error.message);
+    return response.status(500).json({ error: "Não foi possível atualizar o arquivo do material." });
+  } finally {
+    client.release();
+  }
+});
+
 app.post("/api/hr/accounts", requireHr, async (request, response) => {
   const name = typeof request.body?.name === "string" ? request.body.name.trim() : "";
   const email = typeof request.body?.email === "string" ? request.body.email.trim().toLowerCase() : "";
   const jobTitle = typeof request.body?.jobTitle === "string" ? request.body.jobTitle.trim() : "";
-  const departmentId = request.body?.departmentId === "" || request.body?.departmentId == null ? null : Number(request.body.departmentId);
+  const departmentIds = parseOrganizationIds(request.body?.departmentIds, request.body?.departmentId);
+  const teamIds = parseOrganizationIds(request.body?.teamIds);
+  const departmentId = departmentIds?.[0] ?? null;
   const managerEmployeeId = request.body?.managerEmployeeId === "" || request.body?.managerEmployeeId == null ? null : Number(request.body.managerEmployeeId);
   const password = typeof request.body?.password === "string" ? request.body.password : "";
   if (!name || name.length > 160 || !email || email.length > 254 || !/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(email)) {
@@ -412,30 +875,39 @@ app.post("/api/hr/accounts", requireHr, async (request, response) => {
   if (!password || password.length < 8 || password.length > 1024) {
     return response.status(400).json({ error: "A senha inicial deve ter entre 8 e 1.024 caracteres." });
   }
-  if (departmentId !== null && (!Number.isSafeInteger(departmentId) || departmentId <= 0)) {
-    return response.status(400).json({ error: "Selecione uma área válida." });
-  }
   if (managerEmployeeId !== null && (!Number.isSafeInteger(managerEmployeeId) || managerEmployeeId <= 0)) {
     return response.status(400).json({ error: "Selecione uma liderança válida." });
   }
 
   try {
-    if (departmentId !== null) {
-      const department = await pool.query("SELECT 1 FROM public.departments WHERE department_id = $1", [departmentId]);
-      if (!department.rowCount) return response.status(400).json({ error: "A área selecionada não existe." });
-    }
+    const organizationError = await validateOrganizationIds(departmentIds, teamIds);
+    if (organizationError) return response.status(400).json({ error: organizationError });
     if (managerEmployeeId !== null) {
       const manager = await pool.query("SELECT 1 FROM public.employees WHERE employee_id = $1 AND is_active IS TRUE AND is_hr_admin IS FALSE", [managerEmployeeId]);
       if (!manager.rowCount) return response.status(400).json({ error: "A liderança selecionada não existe ou está inativa." });
     }
     const passwordHash = await hashPassword(password);
-    const result = await pool.query(`
+    const client = await pool.connect();
+    let transactionStarted = false;
+    try {
+      await client.query("BEGIN");
+      transactionStarted = true;
+      const result = await client.query(`
       INSERT INTO public.employees (email, full_name, job_title, department_id, manager_employee_id, password_hash, is_hr_admin)
       VALUES ($1, $2, NULLIF($3, ''), $4, $5, $6, FALSE)
       RETURNING employee_id AS id, full_name AS name, email, job_title AS "jobTitle",
         department_id AS "departmentId", manager_employee_id AS "managerEmployeeId", TRUE AS "isActive"
-    `, [email, name, jobTitle, departmentId, managerEmployeeId, passwordHash]);
-    return response.status(201).json(result.rows[0]);
+      `, [email, name, jobTitle, departmentId, managerEmployeeId, passwordHash]);
+      await saveEmployeeOrganization(client, result.rows[0].id, departmentIds, teamIds);
+      await client.query("COMMIT");
+      transactionStarted = false;
+      return response.status(201).json({ ...result.rows[0], departmentIds, teamIds });
+    } catch (error) {
+      if (transactionStarted) await client.query("ROLLBACK").catch(() => undefined);
+      throw error;
+    } finally {
+      client.release();
+    }
   } catch (error) {
     if (error.code === "23505") return response.status(409).json({ error: "Já existe uma conta com esse e-mail." });
     console.error("Could not create HR account:", error.message);
@@ -449,7 +921,9 @@ app.patch("/api/hr/accounts/:accountId", requireHr, async (request, response) =>
   const name = typeof request.body?.name === "string" ? request.body.name.trim() : "";
   const email = typeof request.body?.email === "string" ? request.body.email.trim().toLowerCase() : "";
   const jobTitle = typeof request.body?.jobTitle === "string" ? request.body.jobTitle.trim() : "";
-  const departmentId = request.body?.departmentId === "" || request.body?.departmentId == null ? null : Number(request.body.departmentId);
+  const departmentIds = parseOrganizationIds(request.body?.departmentIds, request.body?.departmentId);
+  const teamIds = parseOrganizationIds(request.body?.teamIds);
+  const departmentId = departmentIds?.[0] ?? null;
   const managerEmployeeId = request.body?.managerEmployeeId === "" || request.body?.managerEmployeeId == null ? null : Number(request.body.managerEmployeeId);
   const isActive = request.body?.isActive;
   if (!name || name.length > 160 || !email || email.length > 254 || !/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(email)) {
@@ -457,28 +931,39 @@ app.patch("/api/hr/accounts/:accountId", requireHr, async (request, response) =>
   }
   if (jobTitle.length > 120) return response.status(400).json({ error: "O cargo pode ter até 120 caracteres." });
   if (typeof isActive !== "boolean") return response.status(400).json({ error: "Informe se a conta está ativa." });
-  if (departmentId !== null && (!Number.isSafeInteger(departmentId) || departmentId <= 0)) return response.status(400).json({ error: "Selecione uma área válida." });
   if (managerEmployeeId !== null && (!Number.isSafeInteger(managerEmployeeId) || managerEmployeeId <= 0 || managerEmployeeId === accountId)) return response.status(400).json({ error: "Selecione uma liderança válida." });
   try {
+    const organizationError = await validateOrganizationIds(departmentIds, teamIds);
+    if (organizationError) return response.status(400).json({ error: organizationError });
     const target = await pool.query("SELECT 1 FROM public.employees WHERE employee_id = $1 AND is_hr_admin IS FALSE", [accountId]);
     if (!target.rowCount) return response.status(404).json({ error: "Pessoa não encontrada." });
-    if (departmentId !== null) {
-      const department = await pool.query("SELECT 1 FROM public.departments WHERE department_id = $1", [departmentId]);
-      if (!department.rowCount) return response.status(400).json({ error: "A área selecionada não existe." });
-    }
     if (managerEmployeeId !== null) {
       const manager = await pool.query("SELECT 1 FROM public.employees WHERE employee_id = $1 AND is_hr_admin IS FALSE", [managerEmployeeId]);
       if (!manager.rowCount) return response.status(400).json({ error: "A liderança selecionada não existe ou está inativa." });
     }
-    const result = await pool.query(`
+    const client = await pool.connect();
+    let transactionStarted = false;
+    try {
+      await client.query("BEGIN");
+      transactionStarted = true;
+      const result = await client.query(`
       UPDATE public.employees AS employee SET email = $2, full_name = $3,
         job_title = NULLIF($4, ''), department_id = $5, manager_employee_id = $6, is_active = $7
       WHERE employee.employee_id = $1 AND employee.is_hr_admin IS FALSE
       RETURNING employee.employee_id AS id, employee.full_name AS name, employee.email,
         employee.job_title AS "jobTitle", employee.department_id AS "departmentId",
         employee.manager_employee_id AS "managerEmployeeId", employee.is_active AS "isActive"
-    `, [accountId, email, name, jobTitle, departmentId, managerEmployeeId, isActive]);
-    return response.json(result.rows[0]);
+      `, [accountId, email, name, jobTitle, departmentId, managerEmployeeId, isActive]);
+      await saveEmployeeOrganization(client, accountId, departmentIds, teamIds);
+      await client.query("COMMIT");
+      transactionStarted = false;
+      return response.json({ ...result.rows[0], departmentIds, teamIds });
+    } catch (error) {
+      if (transactionStarted) await client.query("ROLLBACK").catch(() => undefined);
+      throw error;
+    } finally {
+      client.release();
+    }
   } catch (error) {
     if (error.code === "23505") return response.status(409).json({ error: "Já existe uma conta com esse e-mail." });
     console.error("Could not update HR account:", error.message);
@@ -743,6 +1228,54 @@ app.get("/api/stages", requireAuthenticated, async (_request, response) => {
   }
 });
 
+app.get("/api/organization", requireAuthenticated, async (_request, response) => {
+  try {
+    const [departmentResult, teamResult] = await Promise.all([
+      pool.query(`
+        SELECT department.department_id AS id, department.name, department.description,
+          COALESCE((
+            SELECT json_agg(json_build_object(
+              'id', employee.employee_id, 'name', employee.full_name, 'jobTitle', employee.job_title
+            ) ORDER BY employee.full_name)
+            FROM public.employee_departments AS membership
+            INNER JOIN public.employees AS employee ON employee.employee_id = membership.employee_id
+            WHERE membership.department_id = department.department_id AND employee.is_active IS TRUE
+          ), '[]'::json) AS members
+        FROM public.departments AS department
+        ORDER BY department.name;
+      `),
+      pool.query(`
+        SELECT team.team_id AS id, team.name, team.description,
+          team.parent_team_id AS "parentTeamId", parent.name AS "parentTeamName",
+          COALESCE((
+            SELECT json_agg(json_build_object(
+              'id', employee.employee_id, 'name', employee.full_name, 'jobTitle', employee.job_title,
+              'isLeader', EXISTS (SELECT 1 FROM public.team_leaders AS leader
+                WHERE leader.team_id = team.team_id AND leader.employee_id = employee.employee_id)
+            ) ORDER BY employee.full_name)
+            FROM public.employee_teams AS membership
+            INNER JOIN public.employees AS employee ON employee.employee_id = membership.employee_id
+            WHERE membership.team_id = team.team_id AND employee.is_active IS TRUE
+          ), '[]'::json) AS members,
+          COALESCE((
+            SELECT json_agg(json_build_object('id', employee.employee_id, 'name', employee.full_name, 'jobTitle', employee.job_title) ORDER BY employee.full_name)
+            FROM public.team_leaders AS leader
+            INNER JOIN public.employees AS employee ON employee.employee_id = leader.employee_id
+            WHERE leader.team_id = team.team_id AND employee.is_active IS TRUE
+          ), '[]'::json) AS leaders
+        FROM public.teams AS team
+        LEFT JOIN public.teams AS parent ON parent.team_id = team.parent_team_id
+        WHERE team.is_active IS TRUE
+        ORDER BY parent.name NULLS FIRST, team.name;
+      `),
+    ]);
+    return response.json({ departments: departmentResult.rows, teams: teamResult.rows });
+  } catch (error) {
+    console.error("Could not load company directory:", error.message);
+    return response.status(500).json({ error: "Não foi possível carregar as pessoas e áreas da empresa." });
+  }
+});
+
 app.get("/api/resources/:resourceId/download", requireAuthenticated, async (request, response) => {
   const resourceId = parseAccountId(request.params.resourceId);
   if (!resourceId) return response.status(400).json({ error: "Arquivo inválido." });
@@ -781,7 +1314,7 @@ app.get("/api/resources/:resourceId/download", requireAuthenticated, async (requ
   }
 });
 
-app.get("/api/resources", requireAuthenticated, async (_request, response) => {
+app.get("/api/resources", requireAuthenticated, async (request, response) => {
   try {
     const result = await pool.query(`
       SELECT
@@ -790,6 +1323,7 @@ app.get("/api/resources", requireAuthenticated, async (_request, response) => {
         resource.description,
         resource.format,
         resource.mime_type,
+        resource.owner_employee_id,
         category.slug AS category_slug,
         category.name AS category,
         department.name AS owner_department,
@@ -807,8 +1341,9 @@ app.get("/api/resources", requireAuthenticated, async (_request, response) => {
       LEFT JOIN public.departments AS department
         ON department.department_id = resource.owner_department_id
       WHERE resource.status = 'published'
+        AND ($1::boolean IS TRUE OR resource.owner_employee_id IS NOT NULL)
       ORDER BY category.name, resource.title;
-    `);
+    `, [request.authenticatedEmployee.is_hr_admin === true]);
 
     response.json(result.rows);
   } catch (error) {
