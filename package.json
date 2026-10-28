@@ -6,6 +6,7 @@
   "scripts": {
     "dev": "concurrently -k \"npm:dev:api\" \"vite\"",
     "dev:api": "node --watch --env-file=.env server/index.js",
+    "start": "node server/index.js",
     "db:setup": "node --env-file=.env scripts/setup-local-db.js",
     "build": "vite build",
     "preview": "vite preview",
