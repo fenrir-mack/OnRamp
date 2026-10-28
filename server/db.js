@@ -8,7 +8,7 @@ export const pool = new Pool({
   database: process.env.PGDATABASE ?? "onramp",
   user: process.env.PGUSER ?? "postgres",
   password: process.env.PGPASSWORD,
-  ssl: false,
+  ssl: process.env.PGSSL === "true" ? true : false,
   max: 5,
   idleTimeoutMillis: 30_000,
   connectionTimeoutMillis: 5_000,

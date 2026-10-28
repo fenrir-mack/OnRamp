@@ -8,7 +8,7 @@ const connectionOptions = {
   port: Number(process.env.PGPORT ?? 5432),
   user: process.env.PGUSER ?? "postgres",
   password: process.env.PGPASSWORD,
-  ssl: false,
+  ssl: process.env.PGSSL === "true" ? true : false,
 };
 
 const admin = new Client({ ...connectionOptions, database: "postgres" });

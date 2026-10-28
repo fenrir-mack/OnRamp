@@ -11,7 +11,8 @@ const sessionDurationMs = 12 * 60 * 60 * 1000;
 const rememberedSessionDurationMs = 30 * 24 * 60 * 60 * 1000;
 
 const app = express();
-const port = Number(process.env.API_PORT ?? 3000);
+const port = Number(process.env.PORT ?? process.env.API_PORT ?? 3000);
+const listenHost = process.env.HOST ?? (process.env.PORT ? "0.0.0.0" : "127.0.0.1");
 const fileStorageDirectory = path.resolve(process.env.ONRAMP_FILE_STORAGE_PATH ?? path.join(process.cwd(), "storage", "files"));
 const maximumResourceFileSize = 25 * 1024 * 1024;
 const taskCategoryLabels = { task: "Tarefa", preparation: "Preparação", training: "Treinamento", checkin: "Check-in" };
@@ -1363,8 +1364,16 @@ app.use("/api", (_request, response) => {
   response.status(404).json({ error: "API route not found." });
 });
 
-const server = app.listen(port, "127.0.0.1", () => {
-  console.log(`OnRamp local API listening at http://127.0.0.1:${port}`);
+const webRoot = path.resolve(process.cwd(), "dist");
+app.use(express.static(webRoot));
+app.get(/.*/, (_request, response, next) => {
+  response.sendFile(path.join(webRoot, "index.html"), (error) => {
+    if (error) next(error);
+  });
+});
+
+const server = app.listen(port, listenHost, () => {
+  console.log(`OnRamp server listening on ${listenHost}:${port}`);
 });
 
 async function shutdown() {

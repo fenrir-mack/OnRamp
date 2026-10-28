@@ -54,6 +54,7 @@ PGPORT=5432
 PGDATABASE=onramp
 PGUSER=postgres
 PGPASSWORD=sua_senha_do_postgres
+PGSSL=false
 API_PORT=3000
 ONRAMP_FILE_STORAGE_PATH=storage/files
 ```
@@ -72,7 +73,7 @@ npm run db:setup
 
 O comando cria o banco `onramp` quando necessário e aplica o schema, as migrações e os dados locais, incluindo as contas de teste e os pacotes iniciais de pré-entrada. Pode ser executado novamente para atualizar os dados de demonstração.
 
-Se a conexão falhar, confira se o serviço PostgreSQL está ligado e se `PGHOST`, `PGPORT`, `PGUSER` e `PGPASSWORD` em `.env` correspondem à instalação local.
+Se a conexão falhar, confira se o serviço PostgreSQL está ligado e se `PGHOST`, `PGPORT`, `PGUSER` e `PGPASSWORD` em `.env` correspondem à instalação local. Para um PostgreSQL hospedado que exige TLS, defina `PGSSL=true`.
 
 ## 6. Inicie a aplicação
 
@@ -106,10 +107,54 @@ Os arquivos enviados pelo RH são armazenados localmente em `storage/files/`, fo
 | --- | --- |
 | `npm run dev` | Inicia frontend e API juntos |
 | `npm run dev:api` | Inicia somente a API |
+| `npm start` | Inicia o Express para hospedagem |
 | `npm run db:setup` | Cria/prepara o banco e carrega dados locais |
 | `npm run build` | Gera a build de produção do frontend |
 | `npm run preview` | Serve localmente a build de produção |
 | `npm run format` | Formata os arquivos com oxfmt |
+
+## Estrutura do banco
+
+## Publicar no Azure App Service com PostgreSQL Flexible Server
+
+O Express deste projeto serve a API e os arquivos compilados do Vite (`dist`) no mesmo domínio. Para essa configuração, publique como **Node.js App Service**, não como site estático isolado. A aplicação inicia com `npm start`, e o frontend é compilado com `npm run build`.
+
+### 1. Permitir conexão ao banco
+
+No portal Azure, abra o recurso **Azure Database for PostgreSQL flexible server** e copie o hostname exibido em **Overview** (formato `<servidor>.postgres.database.azure.com`). Em **Networking**, confira se ele está em acesso público com regras de firewall. Adicione o IP público do seu computador para poder rodar o setup. O firewall bloqueia conexões externas por padrão; libere somente os IPs necessários, na porta `5432`.
+
+Use o usuário administrador do PostgreSQL. O script cria o banco `onramp` se ele ainda não existir. Se já criou o banco com outro nome, configure esse nome em `PGDATABASE`.
+
+### 2. Criar tabelas e dados iniciais
+
+No `.env` local (que não deve ser enviado ao Git), coloque os dados do Flexible Server:
+
+```dotenv
+PGHOST=<servidor>.postgres.database.azure.com
+PGPORT=5432
+PGDATABASE=onramp
+PGUSER=<usuario-administrador>
+PGPASSWORD=<senha-do-postgresql>
+PGSSL=true
+API_PORT=3000
+ONRAMP_FILE_STORAGE_PATH=storage/files
+```
+
+No terminal, rode `npm run db:setup`. Isso cria o esquema e as tabelas, aplica as migrações até `016` e inclui os dados iniciais usados pelo app. O setup pode ser repetido para atualizar o banco.
+
+### 3. Configurar o App Service
+
+No portal, abra **App Services > seu aplicativo > Settings > Environment variables > App settings**. Cadastre `PGHOST`, `PGPORT`, `PGDATABASE`, `PGUSER`, `PGPASSWORD` e `PGSSL=true`. Também configure `NODE_ENV=production` e `ONRAMP_FILE_STORAGE_PATH=/home/data/onramp-files` para que os uploads sejam gravados na área persistente do App Service Linux. Salve as configurações e reinicie o aplicativo.
+
+Publique o repositório pelo **Deployment Center**. No App Service, use Node.js 22 e ative o build durante a publicação (`SCM_DO_BUILD_DURING_DEPLOYMENT=true`) para instalar dependências e executar `npm run build`; o comando de inicialização é `npm start`. O App Service fornece a variável `PORT` que o Express utiliza.
+
+No firewall do Flexible Server, permita também os IPs de saída mostrados em **App Service > Properties > Outbound IP addresses**. A conexão exige uma regra de firewall e credenciais válidas. Se o banco estiver configurado com acesso privado/VNet, essa etapa também exige integração de rede entre o App Service e a VNet.
+
+### 4. Conferir a conexão
+
+Abra `https://<seu-app>.azurewebsites.net/api/health`. A resposta `{"status":"ok","database":"onramp"}` confirma que a API conectou ao banco. Depois confira login, biblioteca e jornada na página.
+
+As contas `fenrir1@gmail.com`, `fenrir2@gmail.com` e `fenrir3@gmail.com` têm senhas de demonstração conhecidas. Use-as apenas num ambiente privado de teste; antes de abrir o site publicamente, crie/defina credenciais fortes para as contas.
 
 ## Estrutura do banco
 
