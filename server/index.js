@@ -246,6 +246,25 @@ async function saveTeamPeople(client, teamId, memberIds, leaderIds) {
   }
 }
 
+function teamWriteError(error, action) {
+  if (error.code === "23505") {
+    return { status: 409, body: { error: "Já existe uma equipe com esse nome." } };
+  }
+  const diagnosticId = randomUUID();
+  console.error(`Could not ${action} HR team:`, { diagnosticId, code: error.code, message: error.message });
+  if (isTeamSchemaError(error)) {
+    return {
+      status: 503,
+      body: { error: "O banco está sem as migrações de equipes necessárias. Aplique as migrações 014 e 015 no banco do Azure e tente novamente.", diagnosticId },
+    };
+  }
+  return { status: 500, body: { error: "Não foi possível salvar a equipe.", diagnosticId } };
+}
+
+function isTeamSchemaError(error) {
+  return error.code === "42P01" || error.code === "42703";
+}
+
 async function saveEmployeeOrganization(client, employeeId, departmentIds, teamIds) {
   await client.query("DELETE FROM public.employee_departments WHERE employee_id = $1", [employeeId]);
   await client.query("DELETE FROM public.employee_teams WHERE employee_id = $1", [employeeId]);
@@ -539,8 +558,12 @@ app.get("/api/hr/teams", requireHr, async (_request, response) => {
     `);
     return response.json(result.rows);
   } catch (error) {
-    console.error("Could not load HR teams:", error.message);
-    return response.status(500).json({ error: "Não foi possível carregar as equipes." });
+    const diagnosticId = randomUUID();
+    console.error("Could not load HR teams:", { diagnosticId, code: error.code, message: error.message });
+    if (isTeamSchemaError(error)) {
+      return response.status(503).json({ error: "O banco está sem as migrações de equipes necessárias. Aplique as migrações 014 e 015 no banco do Azure.", diagnosticId });
+    }
+    return response.status(500).json({ error: "Não foi possível carregar as equipes.", diagnosticId });
   }
 });
 
@@ -579,9 +602,8 @@ app.post("/api/hr/teams", requireHr, async (request, response) => {
       client.release();
     }
   } catch (error) {
-    if (error.code === "23505") return response.status(409).json({ error: "Já existe uma equipe com esse nome." });
-    console.error("Could not create HR team:", error.message);
-    return response.status(500).json({ error: "Não foi possível criar a equipe." });
+    const failure = teamWriteError(error, "create");
+    return response.status(failure.status).json(failure.body);
   }
 });
 
@@ -628,9 +650,8 @@ app.patch("/api/hr/teams/:teamId", requireHr, async (request, response) => {
       client.release();
     }
   } catch (error) {
-    if (error.code === "23505") return response.status(409).json({ error: "Já existe uma equipe com esse nome." });
-    console.error("Could not update HR team:", error.message);
-    return response.status(500).json({ error: "Não foi possível atualizar a equipe." });
+    const failure = teamWriteError(error, "update");
+    return response.status(failure.status).json(failure.body);
   }
 });
 
@@ -1212,15 +1233,27 @@ app.get("/api/employees/:employeeId/profile-photo", requireAuthenticated, async 
   const employeeId = parseAccountId(request.params.employeeId);
   if (!employeeId) return response.status(400).json({ error: "Pessoa inválida." });
   try {
-    const employee = await pool.query("SELECT is_active FROM public.employees WHERE employee_id = $1", [employeeId]);
+    const employee = await pool.query("SELECT full_name, is_active FROM public.employees WHERE employee_id = $1", [employeeId]);
     if (!employee.rowCount || (!employee.rows[0].is_active && request.authenticatedEmployee.is_hr_admin !== true)) {
       return response.status(404).json({ error: "Foto de perfil não encontrada." });
     }
     const storageKey = `profile-${employeeId}`;
-    const [contents, mimeType] = await Promise.all([
-      readStoredFile(storageKey),
-      getStoredFileContentType(storageKey),
-    ]);
+    let contents;
+    let mimeType;
+    try {
+      [contents, mimeType] = await Promise.all([
+        readStoredFile(storageKey),
+        getStoredFileContentType(storageKey),
+      ]);
+    } catch (error) {
+      if (error.code !== "ENOENT" && error.code !== "BlobNotFound") throw error;
+      const initials = employee.rows[0].full_name.trim().split(/\s+/).slice(0, 2).map((part) => part[0]).join("").toUpperCase();
+      const safeInitials = initials.replace(/[&<>"']/g, (character) => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", "\"": "&quot;", "'": "&apos;" })[character]);
+      response.setHeader("Cache-Control", "private, no-store");
+      response.setHeader("X-Content-Type-Options", "nosniff");
+      response.type("image/svg+xml");
+      return response.send(`<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 100 100"><rect width="100" height="100" rx="22" fill="#eeedff"/><text x="50" y="54" dominant-baseline="middle" text-anchor="middle" fill="#5556d8" font-family="Arial,sans-serif" font-size="32" font-weight="700">${safeInitials}</text></svg>`);
+    }
     response.setHeader("Cache-Control", "private, no-store");
     response.setHeader("X-Content-Type-Options", "nosniff");
     response.type(mimeType);

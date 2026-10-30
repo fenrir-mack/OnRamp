@@ -653,7 +653,7 @@ function HrPlansView({ section }: { section: "people" | "plans" }) {
         body: JSON.stringify(teamDraft),
       });
       const result = await response.json();
-      if (!response.ok) throw new Error(result.error ?? "Não foi possível criar a equipe.");
+      if (!response.ok) throw new Error(`${result.error ?? "Não foi possível criar a equipe."}${result.diagnosticId ? ` (referência: ${result.diagnosticId})` : ""}`);
       await refreshTeams();
       setTeamDraft({ name: "", description: "", parentTeamId: "", memberIds: [], leaderIds: [] });
       setNotice(`Equipe ${result.name} criada com pessoas e líderes associados.`);
@@ -709,7 +709,7 @@ function HrPlansView({ section }: { section: "people" | "plans" }) {
         body: JSON.stringify({ ...editTeamDraft, parentTeamId: editTeamDraft.parentTeamId || null }),
       });
       const result = await response.json();
-      if (!response.ok) throw new Error(result.error ?? "Não foi possível atualizar a equipe.");
+      if (!response.ok) throw new Error(`${result.error ?? "Não foi possível atualizar a equipe."}${result.diagnosticId ? ` (referência: ${result.diagnosticId})` : ""}`);
       await refreshTeams();
       setAccounts((current) => current.map((account) => ({ ...account, teams: account.teams.map((name) => name === existing.name ? result.name : name) })));
       setEditingTeamId(null);
