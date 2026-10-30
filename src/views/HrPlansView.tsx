@@ -111,6 +111,21 @@ function buildTeamTree(teams: Team[]) {
   return rows;
 }
 
+function getDescendantTeamIds(teams: Team[], teamId: number) {
+  const excluded = new Set([teamId]);
+  let changed = true;
+  while (changed) {
+    changed = false;
+    teams.forEach((team) => {
+      if (!excluded.has(team.id) && team.parentTeamId !== null && excluded.has(team.parentTeamId)) {
+        excluded.add(team.id);
+        changed = true;
+      }
+    });
+  }
+  return excluded;
+}
+
 const taskTypeLabels: Record<PlanTask["taskType"], string> = {
   task: "Tarefa",
   preparation: "Preparação",
@@ -853,11 +868,12 @@ function HrPlansView({ section }: { section: "people" | "plans" }) {
           <section className="content-panel"><div><p className="eyebrow">Grupos de trabalho</p><h2 className="mt-1 text-lg font-extrabold">Equipes <span className="text-sm font-semibold text-[#85879a]">({teams.length})</span></h2></div>
             <div className="mt-4 space-y-3">{teamRows.map(({ team, depth }) => {
               const members = accounts.filter((account) => account.teamIds.includes(team.id));
+              const invalidParentIds = getDescendantTeamIds(teams, team.id);
               return <article className="rounded-xl border border-[#ededf3] bg-white p-4" key={team.id} style={{ marginLeft: `${Math.min(depth, 3) * 18}px` }}>
                 {editingTeamId === team.id ? <form className="space-y-3" onSubmit={updateTeam}>
                   <input required maxLength={120} aria-label="Nome da equipe" className="w-full rounded-lg border border-[#e3e3ed] px-3 py-2 text-sm" value={editTeamDraft.name} onChange={(event) => setEditTeamDraft((current) => ({ ...current, name: event.target.value }))} />
                   <input maxLength={300} aria-label="Descrição da equipe" className="w-full rounded-lg border border-[#e3e3ed] px-3 py-2 text-sm" value={editTeamDraft.description} onChange={(event) => setEditTeamDraft((current) => ({ ...current, description: event.target.value }))} />
-                  <label className="block text-xs font-bold text-[#55576d]">Equipe superior<select className="mt-1.5 w-full rounded-lg border border-[#e3e3ed] bg-white px-3 py-2 text-sm font-normal" value={editTeamDraft.parentTeamId} onChange={(event) => setEditTeamDraft((current) => ({ ...current, parentTeamId: event.target.value }))}><option value="">Equipe principal</option>{teamRows.filter(({ team: option }) => option.id !== team.id).map(({ team: option, depth: optionDepth }) => <option key={option.id} value={option.id}>{`${"　".repeat(optionDepth)}${optionDepth ? "↳ " : ""}${option.name}`}</option>)}</select></label>
+                  <label className="block text-xs font-bold text-[#55576d]">Equipe superior<select className="mt-1.5 w-full rounded-lg border border-[#e3e3ed] bg-white px-3 py-2 text-sm font-normal" value={editTeamDraft.parentTeamId} onChange={(event) => setEditTeamDraft((current) => ({ ...current, parentTeamId: event.target.value }))}><option value="">Equipe principal</option>{teamRows.filter(({ team: option }) => !invalidParentIds.has(option.id)).map(({ team: option, depth: optionDepth }) => <option key={option.id} value={option.id}>{`${"　".repeat(optionDepth)}${optionDepth ? "↳ " : ""}${option.name}`}</option>)}</select></label>
                   <TeamPeoplePicker title="Pessoas da equipe" people={accounts.filter((person) => person.isActive)} selectedIds={editTeamDraft.memberIds} onToggle={(id) => toggleTeamDraftMember(id, true)} />
                   <TeamPeoplePicker title="Líderes da equipe" people={accounts.filter((person) => person.isActive)} selectedIds={editTeamDraft.leaderIds} onToggle={(id) => toggleTeamDraftLeader(id, true)} helper="Marcar uma pessoa líder também a adiciona à equipe." />
                   <div className="flex gap-2"><button className="button-primary h-9 px-3 text-xs" disabled={savingOrganization} type="submit">Salvar</button><button className="rounded-lg border px-3 text-xs" onClick={() => setEditingTeamId(null)} type="button">Cancelar</button></div>
@@ -1036,15 +1052,29 @@ function HrPlansView({ section }: { section: "people" | "plans" }) {
 }
 
 function TeamPeoplePicker({ title, people, selectedIds, onToggle, helper }: { title: string; people: Account[]; selectedIds: number[]; onToggle: (id: number) => void; helper?: string }) {
+  const [search, setSearch] = useState("");
+  const normalizedSearch = search.trim().normalize("NFD").replace(/[\u0300-\u036f]/g, "").toLocaleLowerCase("pt-BR");
+  const matches = normalizedSearch.length >= 2
+    ? people.filter((person) => `${person.name} ${person.email} ${person.jobTitle ?? ""} ${person.departments.join(" ")}`
+      .normalize("NFD").replace(/[\u0300-\u036f]/g, "").toLocaleLowerCase("pt-BR").includes(normalizedSearch))
+    : [];
+  const selectedPeople = people.filter((person) => selectedIds.includes(person.id));
+
   return <details className="rounded-xl border border-[#e3e3ed] bg-white p-3">
     <summary className="cursor-pointer list-none text-sm font-bold text-[#45475d]">{title}<span className="ml-2 rounded-full bg-[#f0efff] px-2 py-0.5 text-[10px] font-extrabold text-[#5556d8]">{selectedIds.length} selecionadas</span></summary>
     {helper && <p className="mt-2 text-[11px] text-[#85879a]">{helper}</p>}
-    <div className="mt-3 max-h-48 space-y-1 overflow-y-auto">
-      {people.length ? people.map((person) => <label className="flex cursor-pointer items-start gap-2 rounded-lg px-2 py-2 hover:bg-[#fafafe]" key={person.id}>
-        <input className="mt-0.5 size-4 accent-[#5b5ce2]" type="checkbox" checked={selectedIds.includes(person.id)} onChange={() => onToggle(person.id)} />
-        <EmployeeAvatar employeeId={person.id} name={person.name} className="grid size-9 shrink-0 place-items-center rounded-full bg-[#f1f0ff] text-[10px] font-extrabold text-[#5b5ce2]" />
-        <span className="min-w-0"><strong className="block truncate text-xs text-[#303249]">{person.name}</strong><small className="block truncate text-[10px] text-[#85879a]">{person.jobTitle || "Cargo não informado"} · {person.departments.join(", ") || "Sem área"}</small></span>
-      </label>) : <p className="px-2 py-2 text-xs text-[#85879a]">Nenhuma pessoa ativa cadastrada.</p>}
+    <label className="mt-3 block"><span className="sr-only">Buscar pessoa por nome, e-mail, cargo ou área</span><span className="relative block"><span className="absolute left-3 top-1/2 -translate-y-1/2 text-[#9698aa]"><Icon name="search" size={16} /></span><input className="w-full rounded-lg border border-[#e3e3ed] bg-white py-2 pl-9 pr-3 text-xs outline-none focus:border-[#b8b8ec]" type="search" value={search} onChange={(event) => setSearch(event.target.value)} placeholder="Buscar nome, e-mail, cargo ou área..." /></span></label>
+    <div className="mt-3 space-y-3">
+      {selectedPeople.length > 0 && <div><p className="mb-1.5 text-[10px] font-extrabold uppercase tracking-wide text-[#85879a]">Selecionadas</p><div className="flex max-h-24 flex-wrap gap-1.5 overflow-y-auto">{selectedPeople.map((person) => <button className="inline-flex max-w-full items-center gap-1.5 rounded-full bg-[#f0efff] py-1 pl-1 pr-2 text-[10px] font-bold text-[#5556d8] hover:bg-[#e7e6ff]" key={person.id} onClick={() => onToggle(person.id)} type="button" title={`Remover ${person.name}`}><EmployeeAvatar employeeId={person.id} name={person.name} className="grid size-6 shrink-0 place-items-center rounded-full bg-white text-[8px] font-extrabold text-[#5b5ce2]" /><span className="truncate">{person.name}</span><span aria-hidden="true">×</span></button>)}</div></div>}
+      <div className="max-h-56 space-y-1 overflow-y-auto">
+        {!people.length ? <p className="px-2 py-2 text-xs text-[#85879a]">Nenhuma pessoa ativa cadastrada.</p>
+          : normalizedSearch.length < 2 ? <p className="px-2 py-3 text-xs text-[#85879a]">Digite pelo menos 2 caracteres para buscar entre {people.length} pessoas.</p>
+            : matches.length ? matches.map((person) => <label className="flex cursor-pointer items-start gap-2 rounded-lg px-2 py-2 hover:bg-[#fafafe]" key={person.id}>
+              <input className="mt-0.5 size-4 accent-[#5b5ce2]" type="checkbox" checked={selectedIds.includes(person.id)} onChange={() => onToggle(person.id)} />
+              <EmployeeAvatar employeeId={person.id} name={person.name} className="grid size-9 shrink-0 place-items-center rounded-full bg-[#f1f0ff] text-[10px] font-extrabold text-[#5b5ce2]" />
+              <span className="min-w-0"><strong className="block truncate text-xs text-[#303249]">{person.name}</strong><small className="block truncate text-[10px] text-[#85879a]">{person.email} · {person.jobTitle || "Cargo não informado"} · {person.departments.join(", ") || "Sem área"}</small></span>
+            </label>) : <p className="px-2 py-3 text-xs text-[#85879a]">Nenhuma pessoa encontrada para “{search}”.</p>}
+      </div>
     </div>
   </details>;
 }

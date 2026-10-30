@@ -53,58 +53,53 @@
   border: 1px solid #e8e8f0;
   border-radius: 20px;
   background: white;
-  padding: 22px;
+  padding: 24px;
   box-shadow: 0 5px 20px rgba(43, 45, 80, 0.035);
 }
 
-.org-chart__scroll { overflow-x: auto; padding: 4px 4px 16px; }
-.org-chart__canvas { min-width: 850px; }
-.org-chart__canvas > .org-person { margin: 0 auto; }
-.org-chart__trunk { width: 2px; height: 32px; margin: 0 auto; background: #dcdce8; }
-
-.org-chart__branches {
-  position: relative;
-  display: grid;
-  grid-template-columns: repeat(3, 1fr);
-  gap: 28px;
-}
-
-.org-chart__branches::before {
-  position: absolute;
-  top: 0;
-  right: 16.67%;
-  left: 16.67%;
-  height: 2px;
-  background: #dcdce8;
-  content: "";
-}
-
-.org-chart__branch { position: relative; display: flex; flex-direction: column; align-items: center; }
-.org-chart__connector { width: 2px; height: 24px; background: #dcdce8; }
-.org-chart__area-label { margin-bottom: 9px; border-radius: 999px; padding: 5px 10px; font-size: 9px; font-weight: 800; }
-.org-chart__team-line { width: 2px; height: 14px; background: #dcdce8; }
-
-.org-person {
-  display: flex;
-  width: 220px;
-  align-items: center;
-  gap: 10px;
-  border: 1px solid #e8e8f0;
-  border-radius: 14px;
-  background: white;
-  padding: 11px;
-  box-shadow: 0 5px 16px rgba(43, 45, 80, 0.05);
-}
-
-.org-person--lead { border-color: #d8d7f4; background: #f7f6ff; }
-.org-person--lead .org-person__avatar { background: #e3e2ff; color: #4f50c8; }
-.org-person--small { width: 210px; padding: 9px; }
-.org-person__avatar { display: grid; width: 37px; height: 37px; flex: 0 0 37px; place-items: center; border-radius: 10px; background: #eeeeff; color: #5758cb; font-size: 10px; font-weight: 800; }
-.org-person__details { min-width: 0; flex: 1; }
-.org-person__heading { display: flex; min-width: 0; align-items: center; gap: 5px; }
-.org-person h3 { overflow: hidden; flex: 1; font-size: 11px; font-weight: 800; text-overflow: ellipsis; white-space: nowrap; }
-.org-person p { margin-top: 2px; overflow: hidden; color: #8a8da2; font-size: 9px; text-overflow: ellipsis; white-space: nowrap; }
+.org-chart__heading { display: flex; align-items: center; justify-content: space-between; gap: 16px; padding-bottom: 20px; border-bottom: 1px solid #eeeeF4; }
+.org-chart__heading h2 { font-size: 18px; font-weight: 800; letter-spacing: -0.02em; }
+.org-chart__heading p { margin-top: 4px; color: #85879a; font-size: 12px; }
+.org-chart__count { flex: 0 0 auto; border-radius: 999px; background: #f1f0ff; padding: 7px 11px; color: #5556d8; font-size: 10px; font-weight: 800; }
+.org-chart__forest { display: grid; gap: 26px; padding-top: 24px; }
+.org-tree__node { position: relative; min-width: 0; }
+.org-tree__children { display: grid; grid-template-columns: repeat(auto-fit, minmax(min(100%, 280px), 1fr)); gap: 18px; margin: 20px 0 0 20px; border-left: 2px solid #dcdcf0; padding-left: 20px; }
+.org-tree__children > .org-tree__node::before { position: absolute; top: 28px; left: -22px; width: 20px; border-top: 2px solid #dcdcf0; content: ""; }
+.org-team-card { width: 100%; max-width: 880px; overflow: hidden; border: 1px solid #e6e6f0; border-radius: 17px; background: white; box-shadow: 0 5px 17px rgba(43, 45, 80, 0.045); }
+.org-team-card__heading { display: flex; align-items: center; gap: 12px; padding: 16px 18px; }
+.org-team-card__icon { display: grid; width: 40px; height: 40px; flex: 0 0 auto; place-items: center; border-radius: 12px; background: #eeedff; color: #5556d8; }
+.org-team-card__heading h3 { overflow: hidden; color: #303249; font-size: 14px; font-weight: 800; text-overflow: ellipsis; white-space: nowrap; }
+.org-team-card__heading p { overflow: hidden; margin-top: 3px; color: #85879a; font-size: 11px; text-overflow: ellipsis; white-space: nowrap; }
+.org-team-card__count { flex: 0 0 auto; border-radius: 999px; background: #f4f4f8; padding: 6px 9px; color: #777a91; font-size: 10px; font-weight: 800; }
+.org-team-card__leaders, .org-team-card__members { border-top: 1px solid #f0f0f5; padding: 13px 18px; }
+.org-team-card__label { display: block; margin-bottom: 9px; color: #85879a; font-size: 9px; font-weight: 800; letter-spacing: .08em; text-transform: uppercase; }
+.org-team-card__people { display: grid; grid-template-columns: repeat(auto-fill, minmax(min(100%, 210px), 1fr)); gap: 8px; }
+.org-team-person { display: flex; min-width: 0; align-items: center; gap: 9px; border: 1px solid #eeeeF4; border-radius: 12px; background: #fbfbfd; padding: 7px 9px; }
+.org-team-person--leader { border-color: #e2e0fa; background: #f8f7ff; }
+.org-team-person > span:nth-child(2) { display: grid; min-width: 0; gap: 2px; }
+.org-team-person strong { overflow: hidden; color: #393b52; font-size: 11px; font-weight: 800; text-overflow: ellipsis; white-space: nowrap; }
+.org-team-person small { overflow: hidden; color: #898b9f; font-size: 9px; text-overflow: ellipsis; white-space: nowrap; }
+.org-team-person__badge { margin-left: auto; border-radius: 999px; background: #e9e8ff; padding: 4px 7px; color: #5556d8; font-size: 8px; font-weight: 800; }
+.org-team-card__empty { border-top: 1px solid #f0f0f5; padding: 15px 18px; color: #898b9f; font-size: 11px; }
 
 @media (min-width: 1024px) {
   .team-card { grid-template-columns: 280px 1fr; align-items: center; }
+}
+
+@media (max-width: 640px) {
+  .org-chart { padding: 17px 13px; }
+  .org-chart__heading { align-items: flex-start; }
+  .org-chart__heading h2 { font-size: 16px; }
+  .org-chart__heading p { max-width: 240px; line-height: 1.5; }
+  .org-chart__count { padding: 6px 8px; font-size: 9px; }
+  .org-chart__forest { gap: 20px; padding-top: 18px; }
+  .org-tree__children { gap: 14px; margin: 15px 0 0 9px; padding-left: 13px; }
+  .org-tree__children > .org-tree__node::before { top: 24px; left: -15px; width: 13px; }
+  .org-team-card__heading { gap: 9px; padding: 13px 11px; }
+  .org-team-card__icon { width: 34px; height: 34px; }
+  .org-team-card__heading h3 { font-size: 12px; }
+  .org-team-card__heading p { max-width: 180px; font-size: 10px; }
+  .org-team-card__count { padding: 5px 7px; font-size: 9px; }
+  .org-team-card__leaders, .org-team-card__members { padding: 11px; }
+  .org-team-card__people { grid-template-columns: minmax(0, 1fr); }
 }

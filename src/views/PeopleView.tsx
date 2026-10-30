@@ -6,26 +6,32 @@ import EmployeeAvatar from "../components/EmployeeAvatar";
 type DirectoryPerson = { id: number; name: string; jobTitle: string | null; isLeader?: boolean };
 type Department = { id: number; name: string; description: string | null; members: DirectoryPerson[] };
 type Team = { id: number; name: string; description: string | null; parentTeamId: number | null; parentTeamName: string | null; members: DirectoryPerson[]; leaders: DirectoryPerson[] };
+type TeamNode = { team: Team; children: TeamNode[] };
 type Directory = { departments: Department[]; teams: Team[] };
 type View = "areas" | "times" | "organograma";
 
-function buildTeamTree(teams: Team[]) {
+function buildTeamTree(teams: Team[]): TeamNode[] {
   const children = new Map<number | null, Team[]>();
   teams.forEach((team) => children.set(team.parentTeamId, [...(children.get(team.parentTeamId) ?? []), team]));
   children.forEach((rows) => rows.sort((left, right) => left.name.localeCompare(right.name)));
-  const rows: { team: Team; depth: number }[] = [];
+  const roots: TeamNode[] = [];
   const visited = new Set<number>();
-  function visit(parentId: number | null, depth: number) {
-    (children.get(parentId) ?? []).forEach((team) => {
-      if (visited.has(team.id)) return;
-      visited.add(team.id);
-      rows.push({ team, depth });
-      visit(team.id, depth + 1);
-    });
+  function createNode(team: Team): TeamNode {
+    visited.add(team.id);
+    const node: TeamNode = { team, children: [] };
+    node.children = (children.get(team.id) ?? []).filter((child) => !visited.has(child.id)).map(createNode);
+    return node;
   }
-  visit(null, 0);
-  teams.forEach((team) => { if (!visited.has(team.id)) rows.push({ team, depth: 0 }); });
-  return rows;
+  (children.get(null) ?? []).forEach((team) => { if (!visited.has(team.id)) roots.push(createNode(team)); });
+  teams.forEach((team) => { if (!visited.has(team.id)) roots.push(createNode(team)); });
+  return roots;
+}
+
+function flattenTeamTree(nodes: TeamNode[], depth = 0): { team: Team; depth: number }[] {
+  return nodes.flatMap((node) => [
+    { team: node.team, depth },
+    ...flattenTeamTree(node.children, depth + 1),
+  ]);
 }
 
 function PeopleView() {
@@ -45,7 +51,8 @@ function PeopleView() {
     return () => controller.abort();
   }, []);
 
-  const teamRows = buildTeamTree(directory.teams);
+  const teamTree = buildTeamTree(directory.teams);
+  const teamRows = flattenTeamTree(teamTree);
   const tabs: { id: View; label: string; icon: IconName }[] = [
     { id: "areas", label: "Áreas", icon: "grid" },
     { id: "times", label: "Equipes", icon: "people" },
@@ -69,14 +76,24 @@ function PeopleView() {
       <div className="team-card__members">{team.members.length ? team.members.map((person) => <PersonRow key={person.id} person={person} compact />) : <p className="text-xs text-[#85879a]">Nenhuma pessoa associada a esta equipe.</p>}</div>
     </article>)}</div> : <EmptyState text={empty} />)}
 
-    {view === "organograma" && <div className="org-chart mt-6"><div className="mb-6"><h2 className="text-lg font-extrabold">Hierarquia das equipes</h2><p className="mt-1 text-xs text-[#8a8da2]">A organização segue as equipes superiores e subequipes definidas pelo RH.</p></div>
-      {teamRows.length ? <div className="space-y-3">{teamRows.map(({ team, depth }) => <article className="rounded-xl border border-[#e8e8f0] bg-white p-4" key={team.id} style={{ marginLeft: `${Math.min(depth, 4) * 24}px` }}>
-        <div className="flex flex-wrap items-center gap-2"><Icon name="people" size={17} /><h3 className="font-extrabold">{team.name}</h3>{team.parentTeamName && <span className="rounded-full bg-[#f3f3f8] px-2 py-1 text-[10px] text-[#777a91]">Subequipe de {team.parentTeamName}</span>}</div>
-        {team.leaders.length > 0 && <p className="mt-2 text-xs text-[#777a91]">Liderança: <strong className="text-[#45475d]">{team.leaders.map(({ name }) => name).join(" · ")}</strong></p>}
-        <div className="mt-3 flex flex-wrap gap-2">{team.members.map((person) => <span className="inline-flex items-center gap-2 rounded-full bg-[#f5f5f9] py-1 pl-1 pr-3 text-xs text-[#55576d]" key={person.id}><EmployeeAvatar employeeId={person.id} name={person.name} className="grid size-7 place-items-center rounded-full bg-[#e9e8ff] text-[9px] font-extrabold text-[#5859d6]" />{person.name}{person.isLeader ? " · Líder" : ""}</span>)}</div>
-      </article>)}</div> : <EmptyState text={empty} />}
+    {view === "organograma" && <div className="org-chart mt-6"><div className="org-chart__heading"><div><h2>Organograma de equipes</h2><p>Equipes superiores aparecem acima das equipes subordinadas.</p></div><span className="org-chart__count">{directory.teams.length} {directory.teams.length === 1 ? "equipe" : "equipes"}</span></div>
+      {teamTree.length ? <div className="org-chart__forest">{teamTree.map((node) => <OrgTeamNode key={node.team.id} node={node} />)}</div> : <EmptyState text={empty} />}
     </div>}
   </section>;
+}
+
+function OrgTeamNode({ node }: { node: TeamNode }) {
+  const { team, children } = node;
+  const individualContributors = team.members.filter((person) => !team.leaders.some((leader) => leader.id === person.id));
+  return <div className="org-tree__node">
+    <article className="org-team-card">
+      <div className="org-team-card__heading"><span className="org-team-card__icon"><Icon name="people" size={18} /></span><div className="min-w-0 flex-1"><h3>{team.name}</h3><p>{team.description || "Equipe da empresa"}</p></div><span className="org-team-card__count">{team.members.length} {team.members.length === 1 ? "pessoa" : "pessoas"}</span></div>
+      {team.leaders.length > 0 && <div className="org-team-card__leaders"><span className="org-team-card__label">{team.leaders.length === 1 ? "Liderança" : "Lideranças"}</span>{team.leaders.map((leader) => <div className="org-team-person org-team-person--leader" key={leader.id}><EmployeeAvatar employeeId={leader.id} name={leader.name} className="grid size-9 shrink-0 place-items-center rounded-full bg-[#e7e6ff] text-[10px] font-extrabold text-[#5556d8]" /><span><strong>{leader.name}</strong><small>{leader.jobTitle || "Cargo não informado"}</small></span><span className="org-team-person__badge">Líder</span></div>)}</div>}
+      {individualContributors.length > 0 && <div className="org-team-card__members"><span className="org-team-card__label">Integrantes · {individualContributors.length}</span><div className="org-team-card__people">{individualContributors.map((person) => <div className="org-team-person" key={person.id}><EmployeeAvatar employeeId={person.id} name={person.name} className="grid size-8 shrink-0 place-items-center rounded-full bg-[#f0f0f7] text-[9px] font-extrabold text-[#595c75]" /><span><strong>{person.name}</strong><small>{person.jobTitle || "Cargo não informado"}</small></span></div>)}</div></div>}
+      {team.members.length === 0 && team.leaders.length === 0 && <p className="org-team-card__empty">Ainda não há pessoas nesta equipe.</p>}
+    </article>
+    {children.length > 0 && <div className="org-tree__children">{children.map((child) => <OrgTeamNode key={child.team.id} node={child} />)}</div>}
+  </div>;
 }
 
 function PersonRow({ person, compact = false }: { person: DirectoryPerson; compact?: boolean }) {
