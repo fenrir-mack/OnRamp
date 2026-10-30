@@ -99,7 +99,7 @@ As senhas são armazenadas como hashes scrypt. Essas contas são apenas para des
 
 ## Arquivos enviados
 
-Os arquivos enviados pelo RH são armazenados localmente em `storage/files/`, fora do PostgreSQL. O banco guarda os metadados e a referência privada. Essa pasta é ignorada pelo Git. Para escolher outro local, altere `ONRAMP_FILE_STORAGE_PATH` no `.env`. Faça backup da pasta de arquivos junto com o banco.
+Os arquivos enviados pelo RH são armazenados localmente em `storage/files/`, fora do PostgreSQL, por padrão. Para usar Azure Blob Storage, crie um container privado e configure `ONRAMP_FILE_STORAGE_PROVIDER=azure`, `AZURE_STORAGE_ACCOUNT_NAME` e `AZURE_STORAGE_CONTAINER_NAME`. O backend usa `DefaultAzureCredential`: localmente, entre no Azure CLI com `az login`; no App Service, habilite uma identidade gerenciada e atribua a função **Storage Blob Data Contributor** ao container. Os downloads continuam passando pela API autenticada do OnRamp; não torne o container público e não coloque chaves de storage no código. O banco guarda metadados e a chave privada do objeto.
 
 ## Comandos úteis
 
@@ -144,7 +144,7 @@ No terminal, rode `npm run db:setup`. Isso cria o esquema e as tabelas, aplica a
 
 ### 3. Configurar o App Service
 
-No portal, abra **App Services > seu aplicativo > Settings > Environment variables > App settings**. Cadastre `PGHOST`, `PGPORT`, `PGDATABASE`, `PGUSER`, `PGPASSWORD` e `PGSSL=true`. Também configure `NODE_ENV=production` e `ONRAMP_FILE_STORAGE_PATH=/home/data/onramp-files` para que os uploads sejam gravados na área persistente do App Service Linux. Salve as configurações e reinicie o aplicativo.
+No portal, abra **App Services > seu aplicativo > Settings > Environment variables > App settings**. Cadastre `PGHOST`, `PGPORT`, `PGDATABASE`, `PGUSER`, `PGPASSWORD` e `PGSSL=true`. Para usar o Blob Storage, também configure `ONRAMP_FILE_STORAGE_PROVIDER=azure`, `AZURE_STORAGE_ACCOUNT_NAME=onramp` e `AZURE_STORAGE_CONTAINER_NAME=onramp-files`. Em **Identity**, habilite a identidade atribuída pelo sistema do App Service. Na Storage account, atribua a essa identidade **Storage Blob Data Contributor** no escopo do container `onramp-files`. Salve as configurações e reinicie o aplicativo. Não é necessário configurar uma chave da Storage account.
 
 Publique o repositório pelo **Deployment Center**. No App Service, use Node.js 22 e ative o build durante a publicação (`SCM_DO_BUILD_DURING_DEPLOYMENT=true`) para instalar dependências e executar `npm run build`; o comando de inicialização é `npm start`. O App Service fornece a variável `PORT` que o Express utiliza.
 
@@ -152,7 +152,7 @@ No firewall do Flexible Server, permita também os IPs de saída mostrados em **
 
 ### 4. Conferir a conexão
 
-Abra `https://<seu-app>.azurewebsites.net/api/health`. A resposta `{"status":"ok","database":"onramp"}` confirma que a API conectou ao banco. Depois confira login, biblioteca e jornada na página.
+Abra `https://<seu-app>.azurewebsites.net/api/health`. A resposta `{"status":"ok","database":"onramp"}` confirma que a API conectou ao banco. Para conferir o armazenamento de arquivos, abra `https://<seu-app>.azurewebsites.net/api/health/storage`; com Azure configurado, a resposta deve incluir `{"status":"ok","storage":"azure"}`. Depois confira login, biblioteca e jornada na página.
 
 As contas `fenrir1@gmail.com`, `fenrir2@gmail.com` e `fenrir3@gmail.com` têm senhas de demonstração conhecidas. Use-as apenas num ambiente privado de teste; antes de abrir o site publicamente, crie/defina credenciais fortes para as contas.
 

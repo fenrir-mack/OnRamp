@@ -1,9 +1,9 @@
 import express from "express";
 import { createHash, randomBytes, randomUUID, scrypt as scryptCallback, timingSafeEqual } from "node:crypto";
-import { mkdir, unlink, writeFile } from "node:fs/promises";
 import path from "node:path";
 import { promisify } from "node:util";
 import { pool } from "./db.js";
+import { checkFileStorage, readStoredFile, removeStoredFile, storeFile } from "./file-storage.js";
 
 const scrypt = promisify(scryptCallback);
 const sessionCookieName = "onramp_session";
@@ -13,7 +13,6 @@ const rememberedSessionDurationMs = 30 * 24 * 60 * 60 * 1000;
 const app = express();
 const port = Number(process.env.PORT ?? process.env.API_PORT ?? 3000);
 const listenHost = process.env.HOST ?? (process.env.PORT ? "0.0.0.0" : "127.0.0.1");
-const fileStorageDirectory = path.resolve(process.env.ONRAMP_FILE_STORAGE_PATH ?? path.join(process.cwd(), "storage", "files"));
 const maximumResourceFileSize = 25 * 1024 * 1024;
 const taskCategoryLabels = { task: "Tarefa", preparation: "Preparação", training: "Treinamento", checkin: "Check-in" };
 
@@ -660,16 +659,13 @@ app.post("/api/hr/resources/upload", requireHr, express.raw({ type: "application
   if (!contents.length || contents.length > maximumResourceFileSize) return response.status(400).json({ error: "O arquivo deve ter até 25 MB e não pode estar vazio." });
   if (mimeType.length > 120) return response.status(400).json({ error: "O tipo do arquivo é inválido." });
   const client = await pool.connect();
-  let storagePath;
-  let fileWritten = false;
+  const storageKey = randomUUID();
+  let fileStored = false;
   let transactionStarted = false;
   try {
     const category = await client.query("SELECT resource_category_id AS id, name FROM public.resource_categories WHERE slug = $1", [categorySlug]);
     if (!category.rowCount) return response.status(400).json({ error: "A categoria selecionada não existe." });
-    const storageKey = randomUUID();
-    storagePath = path.join(fileStorageDirectory, storageKey);
     const extension = path.extname(originalName).slice(1).toUpperCase() || "ARQUIVO";
-    await mkdir(fileStorageDirectory, { recursive: true });
     await client.query("BEGIN");
     transactionStarted = true;
     const resource = await client.query(`
@@ -678,8 +674,8 @@ app.post("/api/hr/resources/upload", requireHr, express.raw({ type: "application
       ) VALUES ($1, $2, NULLIF($3, ''), $4, $5, $6, 'draft')
       RETURNING resource_id AS id
     `, [category.rows[0].id, title, description, extension, mimeType, request.authenticatedEmployee.employee_id]);
-    await writeFile(storagePath, contents, { flag: "wx", mode: 0o600 });
-    fileWritten = true;
+    await storeFile(storageKey, contents, mimeType);
+    fileStored = true;
     await client.query(`
       INSERT INTO public.resource_files (
         resource_id, storage_key, original_file_name, mime_type, size_bytes, sha256, uploaded_by
@@ -695,7 +691,7 @@ app.post("/api/hr/resources/upload", requireHr, express.raw({ type: "application
     });
   } catch (error) {
     if (transactionStarted) await client.query("ROLLBACK").catch(() => undefined);
-    if (fileWritten) await unlink(storagePath).catch(() => undefined);
+    if (fileStored) await removeStoredFile(storageKey).catch(() => undefined);
     console.error("Could not store HR resource:", error.message);
     return response.status(500).json({ error: "Não foi possível salvar o arquivo e seus dados." });
   } finally {
@@ -782,7 +778,7 @@ app.patch("/api/hr/resources/:resourceId", requireHr, async (request, response) 
     if (sourceType === "link") await client.query("DELETE FROM public.resource_files WHERE resource_id = $1", [resourceId]);
     await client.query("COMMIT");
     transactionStarted = false;
-    if (oldStorageKey && /^[0-9a-f-]{36}$/i.test(oldStorageKey)) await unlink(path.join(fileStorageDirectory, oldStorageKey)).catch(() => undefined);
+    if (oldStorageKey && /^[0-9a-f-]{36}$/i.test(oldStorageKey)) await removeStoredFile(oldStorageKey).catch(() => undefined);
     return response.json({ id: resourceId, title, description: description || null, category: categorySlug, format: sourceType === "link" ? "LINK" : undefined, external_url: sourceType === "link" ? externalUrl : null });
   } catch (error) {
     if (transactionStarted) await client.query("ROLLBACK").catch(() => undefined);
@@ -809,10 +805,10 @@ app.put("/api/hr/resources/:resourceId/file", requireHr, express.raw({ type: "ap
   }
   if (!contents.length || contents.length > maximumResourceFileSize) return response.status(400).json({ error: "O arquivo deve ter até 25 MB e não pode estar vazio." });
   const client = await pool.connect();
-  let storagePath;
-  let fileWritten = false;
+  let fileStored = false;
   let transactionStarted = false;
   let oldStorageKey = null;
+  let storageKey;
   try {
     const category = await client.query("SELECT resource_category_id FROM public.resource_categories WHERE slug = $1", [categorySlug]);
     if (!category.rowCount) return response.status(400).json({ error: "A categoria selecionada não existe." });
@@ -824,12 +820,10 @@ app.put("/api/hr/resources/:resourceId/file", requireHr, express.raw({ type: "ap
     `, [resourceId]);
     if (!existing.rowCount) return response.status(404).json({ error: "Material não encontrado ou não editável." });
     oldStorageKey = existing.rows[0].storage_key;
-    const storageKey = randomUUID();
-    storagePath = path.join(fileStorageDirectory, storageKey);
+    storageKey = randomUUID();
     const extension = path.extname(originalName).slice(1).toUpperCase() || "ARQUIVO";
-    await mkdir(fileStorageDirectory, { recursive: true });
-    await writeFile(storagePath, contents, { flag: "wx", mode: 0o600 });
-    fileWritten = true;
+    await storeFile(storageKey, contents, mimeType);
+    fileStored = true;
     await client.query("BEGIN");
     transactionStarted = true;
     await client.query(`
@@ -848,11 +842,11 @@ app.put("/api/hr/resources/:resourceId/file", requireHr, express.raw({ type: "ap
     `, [resourceId, storageKey, originalName, mimeType, contents.length, createHash("sha256").update(contents).digest("hex"), request.authenticatedEmployee.employee_id]);
     await client.query("COMMIT");
     transactionStarted = false;
-    if (oldStorageKey && /^[0-9a-f-]{36}$/i.test(oldStorageKey)) await unlink(path.join(fileStorageDirectory, oldStorageKey)).catch(() => undefined);
+    if (oldStorageKey && /^[0-9a-f-]{36}$/i.test(oldStorageKey)) await removeStoredFile(oldStorageKey).catch(() => undefined);
     return response.json({ id: resourceId, title, description: description || null, format: extension, mime_type: mimeType });
   } catch (error) {
     if (transactionStarted) await client.query("ROLLBACK").catch(() => undefined);
-    if (fileWritten) await unlink(storagePath).catch(() => undefined);
+    if (fileStored) await removeStoredFile(storageKey).catch(() => undefined);
     console.error("Could not replace HR resource file:", error.message);
     return response.status(500).json({ error: "Não foi possível atualizar o arquivo do material." });
   } finally {
@@ -1184,6 +1178,16 @@ app.get("/api/health", async (_request, response) => {
   }
 });
 
+app.get("/api/health/storage", async (_request, response) => {
+  try {
+    const storage = await checkFileStorage();
+    return response.json({ status: "ok", storage });
+  } catch (error) {
+    console.error("File storage health check failed:", error.message);
+    return response.status(503).json({ status: "error", storage: "unavailable" });
+  }
+});
+
 app.get("/api/stages", requireAuthenticated, async (_request, response) => {
   try {
     const result = await pool.query(`
@@ -1295,9 +1299,17 @@ app.get("/api/resources/:resourceId/download", requireAuthenticated, async (requ
     let downloadName;
     if (resource.storage_key) {
       if (!/^[0-9a-f-]{36}$/i.test(resource.storage_key)) return response.status(404).json({ error: "Arquivo não encontrado." });
-      filePath = path.resolve(fileStorageDirectory, resource.storage_key);
-      if (path.dirname(filePath) !== fileStorageDirectory) return response.status(404).json({ error: "Arquivo não encontrado." });
       downloadName = resource.original_file_name;
+      try {
+        const contents = await readStoredFile(resource.storage_key);
+        response.setHeader("X-Content-Type-Options", "nosniff");
+        response.type(resource.fileMimeType ?? resource.mime_type ?? "application/octet-stream");
+        response.attachment(downloadName);
+        return response.send(contents);
+      } catch (error) {
+        if (error.code === "ENOENT" || error.code === "BlobNotFound") return response.status(404).json({ error: "Arquivo não encontrado." });
+        throw error;
+      }
     } else {
       const publicDirectory = path.resolve(process.cwd(), "public");
       filePath = path.resolve(publicDirectory, resource.blob_name);

@@ -6,11 +6,13 @@ import ContentView from "../views/ContentView";
 import JourneyView from "../views/EmployeeJourneyView";
 import PeopleView from "../views/PeopleView";
 import HrPlansView from "../views/HrPlansView";
+import ProfileView from "../views/ProfileView";
 import type { AuthenticatedEmployee } from "./Login";
 
 function Dashboard({ employee, onLogout }: { employee: AuthenticatedEmployee; onLogout: () => void }) {
   const [query, setQuery] = useState("");
   const [activeNav, setActiveNav] = useState(employee.isHrAdmin ? "Pessoas da empresa" : "Início");
+  const [profilePhoto, setProfilePhoto] = useState(() => localStorage.getItem(`onramp-profile-photo-${employee.id}`) ?? "");
   const [mobileMenu, setMobileMenu] = useState(false);
   const [journeyResetVersion, setJourneyResetVersion] = useState(0);
   const [databaseResources, setDatabaseResources] = useState<LibraryResource[]>([]);
@@ -128,13 +130,8 @@ function Dashboard({ employee, onLogout }: { employee: AuthenticatedEmployee; on
           ))}
         </nav>
         <div className="mt-auto px-4 pb-5">
-          {!employee.isHrAdmin && <div className="mb-4 rounded-2xl bg-[#f0efff] p-4">
-            <div className="mb-3 grid size-9 place-items-center rounded-xl bg-white text-[#5b5ce2] shadow-sm"><Icon name="help" size={19} /></div>
-            <p className="text-sm font-extrabold">Precisa de ajuda?</p>
-            <p className="mt-1 text-xs leading-5 text-[#767992]">Encontre a pessoa certa para cada dúvida.</p>
-            <button onClick={() => setActiveNav("Pessoas & áreas")} className="mt-3 text-xs font-extrabold text-[#5556d8]">Ver responsáveis →</button>
-          </div>}
-          {!employee.isHrAdmin && <button className="sidebar__nav-item"><Icon name="settings" size={20} /> Configurações</button>}
+          {!employee.isHrAdmin && <button onClick={() => setActiveNav("Meu perfil")} className="sidebar__nav-item"><Icon name="settings" size={20} /> Configurações</button>}
+          <button onClick={onLogout} className="sidebar__nav-item"><Icon name="logout" size={20} /> Sair da conta</button>
         </div>
       </aside>
 
@@ -148,8 +145,8 @@ function Dashboard({ employee, onLogout }: { employee: AuthenticatedEmployee; on
           <div className="ml-auto flex items-center gap-3 sm:gap-5">
             {!employee.isHrAdmin && <button className="relative grid size-10 place-items-center rounded-xl bg-[#f5f5fa] text-[#61647b]"><Icon name="help" size={20} /></button>}
             <div className="h-8 w-px bg-[#e8e8ef]" />
-            <button onClick={onLogout} className="flex items-center gap-3 text-left" title="Sair">
-              <div className="grid size-10 place-items-center rounded-xl bg-[#e6e6ff] text-sm font-extrabold text-[#5556d8]">{employee.name.split(/\s+/).slice(0, 2).map((part) => part[0]).join("").toUpperCase()}</div>
+            <button onClick={() => { setActiveNav("Meu perfil"); setMobileMenu(false); }} className="flex items-center gap-3 text-left" title="Meu perfil" aria-label="Abrir meu perfil">
+              {profilePhoto ? <img className="size-10 rounded-xl object-cover" src={profilePhoto} alt="" /> : <div className="grid size-10 place-items-center rounded-xl bg-[#e6e6ff] text-sm font-extrabold text-[#5556d8]">{employee.name.split(/\s+/).slice(0, 2).map((part) => part[0]).join("").toUpperCase()}</div>}
               <span className="hidden sm:block"><strong className="block text-sm">{employee.name}</strong><small className="text-xs text-[#85889f]">{employee.department ?? employee.jobTitle ?? employee.email}</small></span>
               <Icon name="chevron" size={14} />
             </button>
@@ -157,7 +154,9 @@ function Dashboard({ employee, onLogout }: { employee: AuthenticatedEmployee; on
         </header>
 
         <div className="mx-auto max-w-[1320px] p-5 sm:p-8 lg:p-10">
-          {employee.isHrAdmin ? (
+          {activeNav === "Meu perfil" ? (
+            <ProfileView employee={employee} onPhotoChange={setProfilePhoto} />
+          ) : employee.isHrAdmin ? (
             <HrPlansView section={activeNav === "Jornadas" ? "plans" : "people"} />
           ) : activeNav === "Pessoas & áreas" ? (
             <PeopleView />

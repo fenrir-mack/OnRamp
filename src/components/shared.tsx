@@ -13,6 +13,7 @@ export type IconName =
   | "help"
   | "home"
   | "lock"
+  | "logout"
   | "mail"
   | "menu"
   | "people"
@@ -96,6 +97,7 @@ export function Icon({ name, size = 20 }: { name: IconName; size?: number }) {
         <path d="M8 10V7a4 4 0 0 1 8 0v3" />
       </>
     ),
+    logout: <path d="M10 17l5-5-5-5m5 5H3m9-9h6a2 2 0 0 1 2 2v14a2 2 0 0 1-2 2h-6" />,
     mail: (
       <>
         <rect x="3" y="5" width="18" height="14" rx="2" />
