@@ -99,7 +99,7 @@ As senhas são armazenadas como hashes scrypt. Essas contas são apenas para des
 
 ## Arquivos enviados
 
-Os arquivos enviados pelo RH são armazenados localmente em `storage/files/`, fora do PostgreSQL, por padrão. Para usar Azure Blob Storage, crie um container privado e configure `ONRAMP_FILE_STORAGE_PROVIDER=azure`, `AZURE_STORAGE_ACCOUNT_NAME` e `AZURE_STORAGE_CONTAINER_NAME`. O backend usa `DefaultAzureCredential`: localmente, entre no Azure CLI com `az login`; no App Service, habilite uma identidade gerenciada e atribua a função **Storage Blob Data Contributor** ao container. Os downloads continuam passando pela API autenticada do OnRamp; não torne o container público e não coloque chaves de storage no código. O banco guarda metadados e a chave privada do objeto.
+Os arquivos enviados pelo RH e as fotos de perfil são armazenados localmente em `storage/files/`, fora do PostgreSQL, por padrão. Para usar Azure Blob Storage, crie um container privado e configure `ONRAMP_FILE_STORAGE_PROVIDER=azure`, `AZURE_STORAGE_ACCOUNT_NAME` e `AZURE_STORAGE_CONTAINER_NAME`. O backend usa `DefaultAzureCredential`: localmente, entre no Azure CLI com `az login`; no App Service, habilite uma identidade gerenciada e atribua a função **Storage Blob Data Contributor** ao container. Downloads e fotos de perfil passam por rotas autenticadas do OnRamp; não torne o container público e não coloque chaves de storage no código. O banco guarda metadados e a chave privada do objeto.
 
 ## Comandos úteis
 

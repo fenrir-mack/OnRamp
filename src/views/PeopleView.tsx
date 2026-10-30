@@ -1,6 +1,7 @@
 import "../styles/people.css";
 import { useEffect, useState } from "react";
 import { Icon, type IconName } from "../components/shared";
+import EmployeeAvatar from "../components/EmployeeAvatar";
 
 type DirectoryPerson = { id: number; name: string; jobTitle: string | null; isLeader?: boolean };
 type Department = { id: number; name: string; description: string | null; members: DirectoryPerson[] };
@@ -25,10 +26,6 @@ function buildTeamTree(teams: Team[]) {
   visit(null, 0);
   teams.forEach((team) => { if (!visited.has(team.id)) rows.push({ team, depth: 0 }); });
   return rows;
-}
-
-function initials(name: string) {
-  return name.trim().split(/\s+/).slice(0, 2).map((part) => part[0]).join("").toUpperCase();
 }
 
 function PeopleView() {
@@ -76,7 +73,7 @@ function PeopleView() {
       {teamRows.length ? <div className="space-y-3">{teamRows.map(({ team, depth }) => <article className="rounded-xl border border-[#e8e8f0] bg-white p-4" key={team.id} style={{ marginLeft: `${Math.min(depth, 4) * 24}px` }}>
         <div className="flex flex-wrap items-center gap-2"><Icon name="people" size={17} /><h3 className="font-extrabold">{team.name}</h3>{team.parentTeamName && <span className="rounded-full bg-[#f3f3f8] px-2 py-1 text-[10px] text-[#777a91]">Subequipe de {team.parentTeamName}</span>}</div>
         {team.leaders.length > 0 && <p className="mt-2 text-xs text-[#777a91]">Liderança: <strong className="text-[#45475d]">{team.leaders.map(({ name }) => name).join(" · ")}</strong></p>}
-        <div className="mt-3 flex flex-wrap gap-2">{team.members.map((person) => <span className="rounded-full bg-[#f5f5f9] px-3 py-1.5 text-xs text-[#55576d]" key={person.id}>{person.name}{person.isLeader ? " · Líder" : ""}</span>)}</div>
+        <div className="mt-3 flex flex-wrap gap-2">{team.members.map((person) => <span className="inline-flex items-center gap-2 rounded-full bg-[#f5f5f9] py-1 pl-1 pr-3 text-xs text-[#55576d]" key={person.id}><EmployeeAvatar employeeId={person.id} name={person.name} className="grid size-7 place-items-center rounded-full bg-[#e9e8ff] text-[9px] font-extrabold text-[#5859d6]" />{person.name}{person.isLeader ? " · Líder" : ""}</span>)}</div>
       </article>)}</div> : <EmptyState text={empty} />}
     </div>}
   </section>;
@@ -84,7 +81,7 @@ function PeopleView() {
 
 function PersonRow({ person, compact = false }: { person: DirectoryPerson; compact?: boolean }) {
   return <div className={`people-person ${person.isLeader ? "people-person--leader" : ""} ${compact ? "people-person--compact" : ""}`}>
-    <div className="people-person__avatar">{initials(person.name)}</div><div className="people-person__details"><div className="people-person__heading"><h3>{person.name}</h3>{person.isLeader && <span className="people-person__badge">Líder</span>}</div><p>{person.jobTitle || "Cargo não informado"}</p></div>
+    <EmployeeAvatar employeeId={person.id} name={person.name} className="grid place-items-center rounded-[11px] bg-[#f1f1f7] text-[11px] font-extrabold text-[#595c75] people-person__avatar" /><div className="people-person__details"><div className="people-person__heading"><h3>{person.name}</h3>{person.isLeader && <span className="people-person__badge">Líder</span>}</div><p>{person.jobTitle || "Cargo não informado"}</p></div>
   </div>;
 }
 

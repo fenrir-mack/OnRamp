@@ -22,6 +22,27 @@ function Dashboard({ employee, onLogout }: { employee: AuthenticatedEmployee; on
   const [planStatus, setPlanStatus] = useState<"loading" | "ready" | "error">("loading");
 
   useEffect(() => {
+    let cancelled = false;
+    let objectUrl = "";
+    fetch("/api/me/profile-photo")
+      .then(async (response) => {
+        if (response.status === 404) return null;
+        if (!response.ok) throw new Error("Could not load the profile photo.");
+        return response.blob();
+      })
+      .then((blob) => {
+        if (!blob || cancelled) return;
+        objectUrl = URL.createObjectURL(blob);
+        setProfilePhoto(objectUrl);
+      })
+      .catch(() => undefined);
+    return () => {
+      cancelled = true;
+      if (objectUrl) URL.revokeObjectURL(objectUrl);
+    };
+  }, [employee.id]);
+
+  useEffect(() => {
     if (employee.isHrAdmin) {
       setResourceStatus("ready");
       return;
@@ -155,7 +176,7 @@ function Dashboard({ employee, onLogout }: { employee: AuthenticatedEmployee; on
 
         <div className="mx-auto max-w-[1320px] p-5 sm:p-8 lg:p-10">
           {activeNav === "Meu perfil" ? (
-            <ProfileView employee={employee} onPhotoChange={setProfilePhoto} />
+            <ProfileView employee={employee} photo={profilePhoto} onPhotoChange={setProfilePhoto} />
           ) : employee.isHrAdmin ? (
             <HrPlansView section={activeNav === "Jornadas" ? "plans" : "people"} />
           ) : activeNav === "Pessoas & áreas" ? (

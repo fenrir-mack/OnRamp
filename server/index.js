@@ -3,7 +3,7 @@ import { createHash, randomBytes, randomUUID, scrypt as scryptCallback, timingSa
 import path from "node:path";
 import { promisify } from "node:util";
 import { pool } from "./db.js";
-import { checkFileStorage, readStoredFile, removeStoredFile, storeFile } from "./file-storage.js";
+import { checkFileStorage, getStoredFileContentType, readStoredFile, removeStoredFile, storeFile } from "./file-storage.js";
 
 const scrypt = promisify(scryptCallback);
 const sessionCookieName = "onramp_session";
@@ -14,6 +14,8 @@ const app = express();
 const port = Number(process.env.PORT ?? process.env.API_PORT ?? 3000);
 const listenHost = process.env.HOST ?? (process.env.PORT ? "0.0.0.0" : "127.0.0.1");
 const maximumResourceFileSize = 25 * 1024 * 1024;
+const maximumProfilePhotoSize = 2 * 1024 * 1024;
+const profilePhotoMimeTypes = ["image/jpeg", "image/png", "image/webp"];
 const taskCategoryLabels = { task: "Tarefa", preparation: "Preparação", training: "Treinamento", checkin: "Check-in" };
 
 app.disable("x-powered-by");
@@ -1188,6 +1190,76 @@ app.get("/api/health/storage", async (_request, response) => {
   }
 });
 
+app.get("/api/me/profile-photo", requireAuthenticated, async (request, response) => {
+  const storageKey = `profile-${request.authenticatedEmployee.employee_id}`;
+  try {
+    const [contents, mimeType] = await Promise.all([
+      readStoredFile(storageKey),
+      getStoredFileContentType(storageKey),
+    ]);
+    response.setHeader("Cache-Control", "private, no-store");
+    response.setHeader("X-Content-Type-Options", "nosniff");
+    response.type(mimeType);
+    return response.send(contents);
+  } catch (error) {
+    if (error.code === "ENOENT" || error.code === "BlobNotFound") return response.status(404).json({ error: "Foto de perfil não encontrada." });
+    console.error("Could not load profile photo:", error.message);
+    return response.status(500).json({ error: "Não foi possível carregar a foto de perfil." });
+  }
+});
+
+app.get("/api/employees/:employeeId/profile-photo", requireAuthenticated, async (request, response) => {
+  const employeeId = parseAccountId(request.params.employeeId);
+  if (!employeeId) return response.status(400).json({ error: "Pessoa inválida." });
+  try {
+    const employee = await pool.query("SELECT is_active FROM public.employees WHERE employee_id = $1", [employeeId]);
+    if (!employee.rowCount || (!employee.rows[0].is_active && request.authenticatedEmployee.is_hr_admin !== true)) {
+      return response.status(404).json({ error: "Foto de perfil não encontrada." });
+    }
+    const storageKey = `profile-${employeeId}`;
+    const [contents, mimeType] = await Promise.all([
+      readStoredFile(storageKey),
+      getStoredFileContentType(storageKey),
+    ]);
+    response.setHeader("Cache-Control", "private, no-store");
+    response.setHeader("X-Content-Type-Options", "nosniff");
+    response.type(mimeType);
+    return response.send(contents);
+  } catch (error) {
+    if (error.code === "ENOENT" || error.code === "BlobNotFound") return response.status(404).json({ error: "Foto de perfil não encontrada." });
+    console.error("Could not load employee profile photo:", error.message);
+    return response.status(500).json({ error: "Não foi possível carregar a foto de perfil." });
+  }
+});
+
+app.put("/api/me/profile-photo", requireAuthenticated, express.raw({ type: profilePhotoMimeTypes, limit: maximumProfilePhotoSize }), async (request, response) => {
+  const mimeType = (request.get("content-type") ?? "").toLowerCase().split(";")[0].trim();
+  const contents = request.body;
+  if (!profilePhotoMimeTypes.includes(mimeType) || !Buffer.isBuffer(contents) || !contents.length || contents.length > maximumProfilePhotoSize) {
+    return response.status(400).json({ error: "Envie uma foto PNG, JPG ou WebP de até 2 MB." });
+  }
+
+  const storageKey = `profile-${request.authenticatedEmployee.employee_id}`;
+  try {
+    await storeFile(storageKey, contents, mimeType, { overwrite: true });
+    return response.json({ status: "ok" });
+  } catch (error) {
+    console.error("Could not save profile photo:", error.message);
+    return response.status(500).json({ error: "Não foi possível salvar a foto de perfil." });
+  }
+});
+
+app.delete("/api/me/profile-photo", requireAuthenticated, async (request, response) => {
+  const storageKey = `profile-${request.authenticatedEmployee.employee_id}`;
+  try {
+    await removeStoredFile(storageKey);
+    return response.status(204).end();
+  } catch (error) {
+    console.error("Could not delete profile photo:", error.message);
+    return response.status(500).json({ error: "Não foi possível remover a foto de perfil." });
+  }
+});
+
 app.get("/api/stages", requireAuthenticated, async (_request, response) => {
   try {
     const result = await pool.query(`
@@ -1368,6 +1440,9 @@ app.get("/api/resources", requireAuthenticated, async (request, response) => {
 app.use((error, request, response, next) => {
   if (error.type === "entity.too.large" && request.path === "/api/hr/resources/upload") {
     return response.status(413).json({ error: "O arquivo excede o limite de 25 MB." });
+  }
+  if (error.type === "entity.too.large" && request.path === "/api/me/profile-photo") {
+    return response.status(413).json({ error: "A foto excede o limite de 2 MB." });
   }
   return next(error);
 });

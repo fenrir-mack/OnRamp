@@ -23,10 +23,11 @@ function getAzureContainerClient() {
   return azureContainerClient;
 }
 
-export async function storeFile(storageKey, contents, mimeType) {
+export async function storeFile(storageKey, contents, mimeType, { overwrite = false } = {}) {
   if (provider === "local") {
     await mkdir(localDirectory, { recursive: true });
-    await writeFile(path.join(localDirectory, storageKey), contents, { flag: "wx", mode: 0o600 });
+    await writeFile(path.join(localDirectory, storageKey), contents, { flag: overwrite ? "w" : "wx", mode: 0o600 });
+    if (mimeType) await writeFile(path.join(localDirectory, `${storageKey}.content-type`), mimeType, { mode: 0o600 });
     return;
   }
 
@@ -39,8 +40,30 @@ export async function readStoredFile(storageKey) {
   return getAzureContainerClient().getBlobClient(storageKey).downloadToBuffer();
 }
 
+export async function getStoredFileContentType(storageKey) {
+  if (provider === "local") {
+    try {
+      return await readFile(path.join(localDirectory, `${storageKey}.content-type`), "utf8");
+    } catch (error) {
+      if (error.code !== "ENOENT") throw error;
+      return "application/octet-stream";
+    }
+  }
+
+  const properties = await getAzureContainerClient().getBlobClient(storageKey).getProperties();
+  return properties.contentType ?? "application/octet-stream";
+}
+
 export async function removeStoredFile(storageKey) {
-  if (provider === "local") return unlink(path.join(localDirectory, storageKey));
+  if (provider === "local") {
+    await unlink(path.join(localDirectory, storageKey)).catch((error) => {
+      if (error.code !== "ENOENT") throw error;
+    });
+    await unlink(path.join(localDirectory, `${storageKey}.content-type`)).catch((error) => {
+      if (error.code !== "ENOENT") throw error;
+    });
+    return;
+  }
   await getAzureContainerClient().getBlobClient(storageKey).deleteIfExists();
 }
 
