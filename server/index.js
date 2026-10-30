@@ -241,7 +241,7 @@ async function saveTeamPeople(client, teamId, memberIds, leaderIds) {
   for (const memberId of allMemberIds) {
     await client.query(`
       INSERT INTO public.employee_teams (employee_id, team_id, team_role)
-      VALUES ($1, $2, CASE WHEN $3::int[] @> ARRAY[$1] THEN 'Líder' ELSE NULL END)
+      VALUES ($1, $2, CASE WHEN $3::int[] @> ARRAY[$1::int] THEN 'Líder' ELSE NULL END)
     `, [memberId, teamId, leaderIds]);
   }
 }
