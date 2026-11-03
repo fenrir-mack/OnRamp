@@ -8,6 +8,8 @@ type TaskCardProps = {
   detail: string;
   category: string;
   owner: string;
+  ownerEmployeeId?: number | null;
+  onOwnerClick?: (employeeId: number) => void;
   required?: boolean;
   icon: IconName;
   status: TaskStatus;
@@ -23,7 +25,7 @@ const statusDetails: Record<TaskStatus, { modifier: string; icon: IconName }> = 
   "Resolvido": { modifier: "resolvido", icon: "check" },
 };
 
-function TaskCard({ title, detail, category, owner, icon, status, statusLabel, required, onReport, onResolve }: TaskCardProps) {
+function TaskCard({ title, detail, category, owner, ownerEmployeeId, onOwnerClick, icon, status, statusLabel, required, onReport, onResolve }: TaskCardProps) {
   const currentStatus = statusDetails[status];
   const label = statusLabel ?? status;
 
@@ -40,7 +42,9 @@ function TaskCard({ title, detail, category, owner, icon, status, statusLabel, r
       </div>
       <div className="task-card__owner">
         <small>Responsável</small>
-        <strong>{owner}</strong>
+        {ownerEmployeeId && onOwnerClick
+          ? <button className="task-card__owner-link" onClick={() => onOwnerClick(ownerEmployeeId)} type="button">{owner}</button>
+          : <strong>{owner}</strong>}
       </div>
       <span className={`status-badge status-badge--${currentStatus.modifier}`}>
         <Icon name={currentStatus.icon} size={13} />

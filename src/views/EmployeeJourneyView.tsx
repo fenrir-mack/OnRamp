@@ -1,13 +1,15 @@
 import "../styles/journey.css";
 import "../styles/preparation.css";
-import { useEffect, useMemo, useState } from "react";
+import { useEffect, useMemo, useRef, useState } from "react";
 import type { FormEvent } from "react";
 import { Icon, type IconName } from "../components/shared";
 import TaskCard from "../components/TaskCard";
 import StageSummary from "../components/StageSummary";
+import ProfileView from "./ProfileView";
+import type { AuthenticatedEmployee } from "../components/Login";
 
 type Issue = { id: number; description: string; createdAt: string };
-type EmployeeTask = { id: number; stageCode: string; title: string; description: string; category: string; taskType: "task" | "preparation" | "training" | "checkin"; ownerRole: string; ownerName: string | null; dueOffsetDays: number; required: boolean; completed: boolean; issues: Issue[] };
+type EmployeeTask = { id: number; stageCode: string; title: string; description: string; category: string; taskType: "task" | "preparation" | "training" | "checkin"; ownerRole: string; ownerName: string | null; ownerEmployeeId: number | null; dueOffsetDays: number; required: boolean; completed: boolean; issues: Issue[] };
 type EmployeeResource = { stageCode: string; resourceId: number; title: string; description: string | null; format: string; externalUrl: string | null; downloadUrl: string | null };
 type Stage = { id: number; code: string; name: string; description: string; durationLabel: string | null; ownerDepartment: string | null };
 type Plan = { configured: boolean; tasks: EmployeeTask[]; resources: EmployeeResource[] };
@@ -22,7 +24,15 @@ function EmployeeJourneyView({ resetVersion, employeeId }: { resetVersion: numbe
   const [reportingTaskId, setReportingTaskId] = useState<number | null>(null);
   const [issueText, setIssueText] = useState("");
   const [saving, setSaving] = useState(false);
+  const [selectedOwner, setSelectedOwner] = useState<AuthenticatedEmployee | null>(null);
+  const [ownerLoading, setOwnerLoading] = useState(false);
+  const [ownerError, setOwnerError] = useState("");
+  const issueFormRef = useRef<HTMLFormElement>(null);
   useEffect(() => setSelectedCode(null), [resetVersion]);
+  useEffect(() => {
+    if (reportingTaskId === null) return;
+    requestAnimationFrame(() => issueFormRef.current?.scrollIntoView({ behavior: "smooth", block: "center" }));
+  }, [reportingTaskId]);
 
   useEffect(() => {
     const controller = new AbortController();
@@ -55,6 +65,21 @@ function EmployeeJourneyView({ resetVersion, employeeId }: { resetVersion: numbe
   const tasks = stage ? tasksByStage.get(stage.code) ?? [] : [];
   const resources = stage ? plan.resources.filter((resource) => resource.stageCode === stage.code) : [];
 
+  async function viewOwnerProfile(ownerId: number) {
+    setOwnerLoading(true);
+    setOwnerError("");
+    try {
+      const response = await fetch(`/api/employees/${ownerId}`);
+      const result = await response.json();
+      if (!response.ok) throw new Error(result.error ?? "Não foi possível carregar o perfil.");
+      setSelectedOwner(result as AuthenticatedEmployee);
+    } catch (profileError) {
+      setOwnerError(profileError instanceof Error ? profileError.message : "Não foi possível carregar o perfil.");
+    } finally {
+      setOwnerLoading(false);
+    }
+  }
+
   async function completeTask(task: EmployeeTask) {
     setSaving(true); setError("");
     try {
@@ -83,6 +108,11 @@ function EmployeeJourneyView({ resetVersion, employeeId }: { resetVersion: numbe
 
   if (loading) return <section><p className="eyebrow">Seu onboarding</p><h1 className="mt-1 text-3xl font-extrabold tracking-tight">Minha jornada</h1><p className="mt-6 text-sm text-[#777a91]">Carregando suas etapas e atividades...</p></section>;
 
+  if (selectedOwner) return <section className="people-directory">
+    <button className="people-back-button" onClick={() => setSelectedOwner(null)} type="button"><Icon name="chevron" size={15} /> Voltar para as tarefas</button>
+    <div className="mt-5"><ProfileView employee={selectedOwner} photo={`/api/employees/${selectedOwner.id}/profile-photo`} onPhotoChange={() => undefined} readOnly /></div>
+  </section>;
+
   if (stage) {
     const doneCount = tasks.filter((task) => task.completed).length;
     const stageIssues = tasks.flatMap((task) => task.issues.map((issue) => ({ ...issue, taskTitle: task.title })));
@@ -93,8 +123,10 @@ function EmployeeJourneyView({ resetVersion, employeeId }: { resetVersion: numbe
       <div className="mt-6 grid gap-5">
         <div className="content-panel"><p className="eyebrow">Materiais de apoio</p><div className="mt-4 grid grid-cols-2 gap-2">{resources.map((resource) => { const href = resource.externalUrl ?? resource.downloadUrl; return href ? <a className="journey-detail__material" href={href} key={resource.resourceId} rel="noreferrer" target="_blank"><span><Icon name="book" size={16} /></span><strong>{resource.title}</strong><Icon name="chevron" size={14} /></a> : <div className="journey-detail__material" key={resource.resourceId}><span><Icon name="book" size={16} /></span><strong>{resource.title}</strong></div>; })}{resources.length === 0 && <p className="col-span-2 rounded-xl bg-[#fafafe] p-4 text-sm text-[#85879a]">Nenhum material foi associado a esta etapa.</p>}</div></div>
         <div className="content-panel"><StageSummary eyebrow="Atividades da etapa" title="Tarefas e orientações" description="Acompanhe as atividades que o RH atribuiu à sua jornada." stats={[{ value: doneCount, label: "Concluídas", tone: "success" }, { value: tasks.length - doneCount, label: "Pendentes", tone: "warning" }, { value: stageIssues.length, label: "Problemas informados", tone: "danger" }]} />
-          <div className="task-card-list journey-detail__task-list">{tasks.length ? tasks.map((task) => <TaskCard key={task.id} title={task.title} detail={task.description} category={task.category} owner={task.ownerName ?? task.ownerRole} required={task.required} icon={taskIcon(task.taskType)} status={task.completed ? "Concluído" : "Pendente"} onReport={() => { setReportingTaskId(task.id); setIssueText(""); }} onResolve={!task.completed ? () => setConfirmingTask(task) : undefined} />) : <p className="rounded-xl border border-dashed border-[#dedeeb] bg-[#fafafe] p-6 text-center text-sm text-[#85879a]">O RH ainda não adicionou tarefas a esta etapa.</p>}</div>
-          {reportingTaskId !== null && <form className="journey-issue" onSubmit={reportIssue}><div className="journey-issue__heading"><div><p className="eyebrow">Novo problema</p><strong>{tasks.find(({ id }) => id === reportingTaskId)?.title}</strong></div><button type="button" onClick={() => setReportingTaskId(null)}>Cancelar</button></div><textarea required maxLength={2000} value={issueText} onChange={(event) => setIssueText(event.target.value)} placeholder="Descreva o problema ou o que está faltando..." /><button className="journey-issue__submit" disabled={saving} type="submit">{saving ? "Enviando..." : "Enviar para o responsável"}</button></form>}
+          <div className="task-card-list journey-detail__task-list">{tasks.length ? tasks.map((task) => <TaskCard key={task.id} title={task.title} detail={task.description} category={task.category} owner={task.ownerName ?? task.ownerRole} ownerEmployeeId={task.ownerEmployeeId} onOwnerClick={(ownerId) => void viewOwnerProfile(ownerId)} required={task.required} icon={taskIcon(task.taskType)} status={task.completed ? "Concluído" : "Pendente"} onReport={() => { setReportingTaskId(task.id); setIssueText(""); }} onResolve={!task.completed ? () => setConfirmingTask(task) : undefined} />) : <p className="rounded-xl border border-dashed border-[#dedeeb] bg-[#fafafe] p-6 text-center text-sm text-[#85879a]">O RH ainda não adicionou tarefas a esta etapa.</p>}</div>
+          {ownerLoading && <p className="mt-3 text-sm text-[#777a91]" role="status">Carregando perfil...</p>}
+          {ownerError && <p className="mt-3 text-sm text-red-700" role="alert">{ownerError}</p>}
+          {reportingTaskId !== null && <form ref={issueFormRef} className="journey-issue" onSubmit={reportIssue}><div className="journey-issue__heading"><div><p className="eyebrow">Novo problema</p><strong>{tasks.find(({ id }) => id === reportingTaskId)?.title}</strong></div><button type="button" onClick={() => setReportingTaskId(null)}>Cancelar</button></div><textarea required maxLength={2000} value={issueText} onChange={(event) => setIssueText(event.target.value)} placeholder="Descreva o problema ou o que está faltando..." /><button className="journey-issue__submit" disabled={saving} type="submit">{saving ? "Enviando..." : "Enviar para o responsável"}</button></form>}
           {stageIssues.length > 0 && <div className="journey-issue__history"><p className="eyebrow">Problemas informados</p>{stageIssues.map((issue) => <div className="journey-issue__item" key={issue.id}><span><Icon name="clock" size={15} /></span><div><strong>{issue.taskTitle}</strong><small>{issue.description}</small></div><em>Enviado</em></div>)}</div>}
         </div>
       </div>

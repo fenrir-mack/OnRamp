@@ -7,6 +7,7 @@ import JourneyView from "../views/EmployeeJourneyView";
 import PeopleView from "../views/PeopleView";
 import HrPlansView from "../views/HrPlansView";
 import ProfileView from "../views/ProfileView";
+import MessagesView from "../views/MessagesView";
 import type { AuthenticatedEmployee } from "./Login";
 
 function Dashboard({ employee, onLogout }: { employee: AuthenticatedEmployee; onLogout: () => void }) {
@@ -14,12 +15,34 @@ function Dashboard({ employee, onLogout }: { employee: AuthenticatedEmployee; on
   const [activeNav, setActiveNav] = useState(employee.isHrAdmin ? "Pessoas da empresa" : "Início");
   const [profilePhoto, setProfilePhoto] = useState(() => localStorage.getItem(`onramp-profile-photo-${employee.id}`) ?? "");
   const [mobileMenu, setMobileMenu] = useState(false);
+  const [unreadSupportCount, setUnreadSupportCount] = useState(0);
   const [journeyResetVersion, setJourneyResetVersion] = useState(0);
+  const [peopleResetVersion, setPeopleResetVersion] = useState(0);
   const [databaseResources, setDatabaseResources] = useState<LibraryResource[]>([]);
   const [resourceStatus, setResourceStatus] = useState<"loading" | "ready" | "error">("loading");
   const [databaseStages, setDatabaseStages] = useState<{ code: string; name: string; description: string; durationLabel: string | null }[]>([]);
   const [employeePlanTasks, setEmployeePlanTasks] = useState<{ id: number; stageCode: string; title: string; description: string; required: boolean; completed: boolean; dueOffsetDays: number }[]>([]);
   const [planStatus, setPlanStatus] = useState<"loading" | "ready" | "error">("loading");
+
+  useEffect(() => {
+    let active = true;
+    async function refreshUnreadCount() {
+      try {
+        const response = await fetch("/api/support/unread-count");
+        if (!response.ok) return;
+        const result = await response.json() as { unreadCount: number };
+        if (active) setUnreadSupportCount(result.unreadCount);
+      } catch { /* Keep the latest known unread count while offline. */ }
+    }
+    void refreshUnreadCount();
+    const interval = window.setInterval(() => void refreshUnreadCount(), 30_000);
+    window.addEventListener("focus", refreshUnreadCount);
+    return () => {
+      active = false;
+      window.clearInterval(interval);
+      window.removeEventListener("focus", refreshUnreadCount);
+    };
+  }, [employee.id]);
 
   useEffect(() => {
     let cancelled = false;
@@ -121,12 +144,13 @@ function Dashboard({ employee, onLogout }: { employee: AuthenticatedEmployee; on
     [databaseResources, query],
   );
   const navItems: { label: string; icon: IconName }[] = employee.isHrAdmin
-    ? [{ label: "Pessoas da empresa", icon: "people" }, { label: "Jornadas", icon: "calendar" }]
+    ? [{ label: "Pessoas da empresa", icon: "people" }, { label: "Jornadas", icon: "calendar" }, { label: "Mensagens de suporte", icon: "chat" }]
     : [
         { label: "Início", icon: "home" },
         { label: "Minha jornada", icon: "calendar" },
         { label: "Conteúdos", icon: "book" },
         { label: "Pessoas & áreas", icon: "people" },
+        { label: "Mensagens de suporte", icon: "chat" },
       ];
 
   return (
@@ -143,9 +167,13 @@ function Dashboard({ employee, onLogout }: { employee: AuthenticatedEmployee; on
                 setActiveNav(item.label);
                 setMobileMenu(false);
                 if (item.label === "Minha jornada") setJourneyResetVersion((version) => version + 1);
+                if (item.label === "Pessoas & áreas") setPeopleResetVersion((version) => version + 1);
               }}
             >
-              <Icon name={item.icon} size={20} />
+              <span className="relative grid place-items-center">
+                <Icon name={item.icon} size={20} />
+                {item.label === "Mensagens de suporte" && unreadSupportCount > 0 && <span className="sidebar__unread-badge" role="status" aria-label={`${unreadSupportCount} mensagens não lidas`}>{unreadSupportCount > 99 ? "99+" : unreadSupportCount}</span>}
+              </span>
               {item.label}
             </button>
           ))}
@@ -174,13 +202,15 @@ function Dashboard({ employee, onLogout }: { employee: AuthenticatedEmployee; on
           </div>
         </header>
 
-        <div className="mx-auto max-w-[1320px] p-5 sm:p-8 lg:p-10">
+        <div className={`mx-auto w-full ${activeNav === "Mensagens de suporte" ? "max-w-none p-3 sm:p-4 lg:p-5" : "max-w-[1320px] p-5 sm:p-8 lg:p-10"}`}>
           {activeNav === "Meu perfil" ? (
             <ProfileView employee={employee} photo={profilePhoto} onPhotoChange={setProfilePhoto} />
+          ) : activeNav === "Mensagens de suporte" ? (
+            <MessagesView employee={employee} onUnreadCountChange={setUnreadSupportCount} />
           ) : employee.isHrAdmin ? (
             <HrPlansView section={activeNav === "Jornadas" ? "plans" : "people"} />
           ) : activeNav === "Pessoas & áreas" ? (
-            <PeopleView />
+            <PeopleView resetVersion={peopleResetVersion} />
           ) : activeNav === "Conteúdos" ? (
             <ContentView query={query} setQuery={setQuery} resources={databaseResources} filtered={filtered} status={resourceStatus} />
           ) : activeNav === "Minha jornada" ? (

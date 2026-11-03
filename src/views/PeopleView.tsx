@@ -35,7 +35,7 @@ function flattenTeamTree(nodes: TeamNode[], depth = 0): { team: Team; depth: num
   ]);
 }
 
-function PeopleView() {
+function PeopleView({ resetVersion }: { resetVersion: number }) {
   const [view, setView] = useState<View>("areas");
   const [selectedDepartment, setSelectedDepartment] = useState<Department | null>(null);
   const [selectedPerson, setSelectedPerson] = useState<{ person: DirectoryPerson; departmentName?: string } | null>(null);
@@ -53,6 +53,12 @@ function PeopleView() {
       .catch((error: unknown) => { if (!(error instanceof DOMException && error.name === "AbortError")) setStatus("error"); });
     return () => controller.abort();
   }, []);
+
+  useEffect(() => {
+    setView("areas");
+    setSelectedDepartment(null);
+    setSelectedPerson(null);
+  }, [resetVersion]);
 
   const teamTree = buildTeamTree(directory.teams);
   const teamRows = flattenTeamTree(teamTree);

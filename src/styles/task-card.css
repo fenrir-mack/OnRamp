@@ -41,6 +41,8 @@
 .task-card__owner { display: flex; grid-column: 2 / -1; align-items: baseline; gap: 5px; width: auto; text-align: left; }
 .task-card__owner small { color: #a0a2b2; font-size: 9px; }
 .task-card__owner strong { color: #55576d; font-size: 11px; font-weight: 800; }
+.task-card__owner-link { color: #5556c9; font-size: 11px; font-weight: 800; text-decoration: underline; text-decoration-color: transparent; text-underline-offset: 2px; }
+.task-card__owner-link:hover, .task-card__owner-link:focus-visible { text-decoration-color: currentColor; }
 .task-card__actions { display: flex; grid-column: 2 / -1; align-items: center; gap: 8px; }
 .task-card__report { flex: 0 0 auto; color: #6062d0; font-size: 11px; font-weight: 800; white-space: nowrap; }
 .task-card__report:hover { text-decoration: underline; }

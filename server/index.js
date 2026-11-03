@@ -95,7 +95,12 @@ app.get("/api/me/plan", requireAuthenticated, async (request, response) => {
           COALESCE(progress.is_completed, FALSE) AS completed,
           COALESCE((SELECT json_agg(json_build_object('id', issue.employee_plan_task_issue_id, 'description', issue.description, 'createdAt', issue.created_at) ORDER BY issue.created_at DESC)
             FROM public.employee_plan_task_issues AS issue
-            WHERE issue.employee_plan_task_id = plan_task.employee_plan_task_id AND issue.employee_id = $1), '[]'::json) AS issues
+            WHERE issue.employee_plan_task_id = plan_task.employee_plan_task_id AND issue.employee_id = $1
+              AND EXISTS (
+                SELECT 1 FROM public.employee_plan_task_issue_conversations AS conversation
+                WHERE conversation.employee_plan_task_issue_id = issue.employee_plan_task_issue_id
+                  AND conversation.last_message_at >= CURRENT_TIMESTAMP - INTERVAL '2 months'
+              )), '[]'::json) AS issues
         FROM public.employee_plan_tasks AS plan_task
         INNER JOIN public.stage_templates AS stage ON stage.stage_template_id = plan_task.stage_template_id
         LEFT JOIN public.employees AS task_owner ON task_owner.employee_id = plan_task.owner_employee_id
@@ -151,18 +156,444 @@ app.post("/api/me/plan/tasks/:taskId/issues", requireAuthenticated, async (reque
   const description = typeof request.body?.description === "string" ? request.body.description.trim() : "";
   if (!taskId || !description || description.length > 2000) return response.status(400).json({ error: "Descreva o problema em até 2.000 caracteres." });
   const employeeId = request.authenticatedEmployee.employee_id;
+  const client = await pool.connect();
   try {
-    const task = await pool.query("SELECT 1 FROM public.employee_plan_tasks WHERE employee_plan_task_id = $1 AND employee_id = $2", [taskId, employeeId]);
-    if (!task.rowCount) return response.status(404).json({ error: "Tarefa não encontrada na sua jornada." });
-    const result = await pool.query(`
+    await client.query("BEGIN");
+    const task = await client.query("SELECT 1 FROM public.employee_plan_tasks WHERE employee_plan_task_id = $1 AND employee_id = $2", [taskId, employeeId]);
+    if (!task.rowCount) {
+      await client.query("ROLLBACK");
+      return response.status(404).json({ error: "Tarefa não encontrada na sua jornada." });
+    }
+    const result = await client.query(`
       INSERT INTO public.employee_plan_task_issues (employee_plan_task_id, employee_id, description)
       VALUES ($1, $2, $3)
       RETURNING employee_plan_task_issue_id AS id, description, created_at AS "createdAt"
     `, [taskId, employeeId, description]);
-    return response.status(201).json(result.rows[0]);
+    const conversation = await client.query(`
+      INSERT INTO public.employee_plan_task_issue_conversations (employee_plan_task_issue_id)
+      VALUES ($1)
+      RETURNING employee_plan_task_issue_conversation_id AS id
+    `, [result.rows[0].id]);
+    await client.query(`
+      INSERT INTO public.employee_plan_task_issue_messages
+        (employee_plan_task_issue_conversation_id, sender_employee_id, body, sent_at)
+      VALUES ($1, $2, $3, $4)
+    `, [conversation.rows[0].id, employeeId, description, result.rows[0].createdAt]);
+    await client.query("COMMIT");
+    return response.status(201).json({ ...result.rows[0], conversationId: conversation.rows[0].id });
   } catch (error) {
+    await client.query("ROLLBACK").catch(() => undefined);
     console.error("Could not save employee task issue:", error.message);
     return response.status(500).json({ error: "Não foi possível enviar o problema." });
+  } finally {
+    client.release();
+  }
+});
+
+app.get("/api/support/conversations", requireAuthenticated, async (request, response) => {
+  const employeeId = request.authenticatedEmployee.employee_id;
+  const isHrAdmin = request.authenticatedEmployee.is_hr_admin === true;
+  try {
+    const result = await pool.query(`
+      SELECT conversation.employee_plan_task_issue_conversation_id AS "conversationId",
+        issue.employee_plan_task_issue_id AS "issueId", issue.employee_id AS "employeeId",
+        employee.full_name AS "employeeName", employee.email AS "employeeEmail",
+        employee.job_title AS "employeeJobTitle", department.name AS "employeeDepartment",
+        plan_task.title AS "taskTitle", stage.name AS "stageName",
+        plan_task.owner_employee_id AS "ownerEmployeeId", owner.full_name AS "ownerName",
+        issue.description AS "issueDescription", conversation.status,
+        conversation.resolution_requested_by_employee_id AS "resolutionRequestedByEmployeeId",
+        conversation.resolution_respondent_employee_id AS "resolutionRespondentEmployeeId",
+        requester.full_name AS "resolutionRequestedByName", respondent.full_name AS "resolutionRespondentName",
+        conversation.resolution_requested_at AS "resolutionRequestedAt",
+        conversation.resolution_due_at AS "resolutionDueAt",
+        conversation.created_at AS "createdAt", conversation.last_message_at AS "lastMessageAt",
+        conversation.last_message_at + INTERVAL '2 months' AS "expiresAt",
+        latest.body AS "lastMessage", latest.sender_employee_id AS "lastSenderId"
+      FROM public.employee_plan_task_issue_conversations AS conversation
+      INNER JOIN public.employee_plan_task_issues AS issue
+        ON issue.employee_plan_task_issue_id = conversation.employee_plan_task_issue_id
+      INNER JOIN public.employee_plan_tasks AS plan_task
+        ON plan_task.employee_plan_task_id = issue.employee_plan_task_id
+      INNER JOIN public.stage_templates AS stage ON stage.stage_template_id = plan_task.stage_template_id
+      INNER JOIN public.employees AS employee ON employee.employee_id = issue.employee_id
+      LEFT JOIN public.departments AS department ON department.department_id = employee.department_id
+      LEFT JOIN public.employees AS owner ON owner.employee_id = plan_task.owner_employee_id
+      LEFT JOIN public.employees AS requester ON requester.employee_id = conversation.resolution_requested_by_employee_id
+      LEFT JOIN public.employees AS respondent ON respondent.employee_id = conversation.resolution_respondent_employee_id
+      LEFT JOIN LATERAL (
+        SELECT message.body, message.sender_employee_id
+        FROM public.employee_plan_task_issue_messages AS message
+        WHERE message.employee_plan_task_issue_conversation_id = conversation.employee_plan_task_issue_conversation_id
+        ORDER BY message.sent_at DESC, message.employee_plan_task_issue_message_id DESC
+        LIMIT 1
+      ) AS latest ON TRUE
+      WHERE conversation.last_message_at >= CURRENT_TIMESTAMP - INTERVAL '2 months'
+        AND ($1::boolean IS TRUE OR issue.employee_id = $2 OR plan_task.owner_employee_id = $2)
+      ORDER BY (conversation.status = 'pending_confirmation') DESC,
+        (conversation.status = 'open') DESC, conversation.last_message_at DESC;
+    `, [isHrAdmin, employeeId]);
+    return response.json(result.rows);
+  } catch (error) {
+    console.error("Could not load support conversations:", error.message);
+    return response.status(500).json({ error: "Não foi possível carregar as mensagens de suporte." });
+  }
+});
+
+app.get("/api/support/unread-count", requireAuthenticated, async (request, response) => {
+  try {
+    const unreadCount = await getUnreadSupportMessageCount(
+      request.authenticatedEmployee.employee_id,
+      request.authenticatedEmployee.is_hr_admin === true,
+    );
+    return response.json({ unreadCount });
+  } catch (error) {
+    console.error("Could not load unread support message count:", error.message);
+    return response.status(500).json({ error: "Não foi possível carregar as notificações." });
+  }
+});
+
+app.get("/api/support/conversations/:conversationId", requireAuthenticated, async (request, response) => {
+  const conversationId = parseAccountId(request.params.conversationId);
+  if (!conversationId) return response.status(400).json({ error: "Conversa inválida." });
+  const employeeId = request.authenticatedEmployee.employee_id;
+  const isHrAdmin = request.authenticatedEmployee.is_hr_admin === true;
+  try {
+    const conversation = await pool.query(`
+      SELECT conversation.employee_plan_task_issue_conversation_id AS "conversationId",
+        issue.employee_plan_task_issue_id AS "issueId", issue.employee_id AS "employeeId",
+        employee.full_name AS "employeeName", employee.email AS "employeeEmail",
+        employee.job_title AS "employeeJobTitle", department.name AS "employeeDepartment",
+        plan_task.title AS "taskTitle", stage.name AS "stageName",
+        plan_task.owner_employee_id AS "ownerEmployeeId", owner.full_name AS "ownerName",
+        issue.description AS "issueDescription", conversation.status,
+        conversation.resolution_requested_by_employee_id AS "resolutionRequestedByEmployeeId",
+        conversation.resolution_respondent_employee_id AS "resolutionRespondentEmployeeId",
+        requester.full_name AS "resolutionRequestedByName", respondent.full_name AS "resolutionRespondentName",
+        conversation.resolution_requested_at AS "resolutionRequestedAt",
+        conversation.resolution_due_at AS "resolutionDueAt",
+        conversation.created_at AS "createdAt", conversation.last_message_at AS "lastMessageAt",
+        conversation.last_message_at + INTERVAL '2 months' AS "expiresAt"
+      FROM public.employee_plan_task_issue_conversations AS conversation
+      INNER JOIN public.employee_plan_task_issues AS issue
+        ON issue.employee_plan_task_issue_id = conversation.employee_plan_task_issue_id
+      INNER JOIN public.employee_plan_tasks AS plan_task
+        ON plan_task.employee_plan_task_id = issue.employee_plan_task_id
+      INNER JOIN public.stage_templates AS stage ON stage.stage_template_id = plan_task.stage_template_id
+      INNER JOIN public.employees AS employee ON employee.employee_id = issue.employee_id
+      LEFT JOIN public.departments AS department ON department.department_id = employee.department_id
+      LEFT JOIN public.employees AS owner ON owner.employee_id = plan_task.owner_employee_id
+      LEFT JOIN public.employees AS requester ON requester.employee_id = conversation.resolution_requested_by_employee_id
+      LEFT JOIN public.employees AS respondent ON respondent.employee_id = conversation.resolution_respondent_employee_id
+      WHERE conversation.employee_plan_task_issue_conversation_id = $1
+        AND conversation.last_message_at >= CURRENT_TIMESTAMP - INTERVAL '2 months'
+        AND ($2::boolean IS TRUE OR issue.employee_id = $3 OR plan_task.owner_employee_id = $3)
+    `, [conversationId, isHrAdmin, employeeId]);
+    if (!conversation.rowCount) return response.status(404).json({ error: "Conversa não encontrada ou expirada." });
+    const messages = await pool.query(`
+      SELECT message.employee_plan_task_issue_message_id AS id,
+        message.sender_employee_id AS "senderId", COALESCE(sender.full_name, 'OnRamp') AS "senderName",
+        message.body, message.sent_at AS "sentAt"
+      FROM public.employee_plan_task_issue_messages AS message
+      LEFT JOIN public.employees AS sender ON sender.employee_id = message.sender_employee_id
+      WHERE message.employee_plan_task_issue_conversation_id = $1
+      ORDER BY message.sent_at, message.employee_plan_task_issue_message_id;
+    `, [conversationId]);
+    return response.json({ conversation: conversation.rows[0], messages: messages.rows });
+  } catch (error) {
+    console.error("Could not load support conversation:", error.message);
+    return response.status(500).json({ error: "Não foi possível abrir esta conversa." });
+  }
+});
+
+app.post("/api/support/conversations/:conversationId/read", requireAuthenticated, async (request, response) => {
+  const conversationId = parseAccountId(request.params.conversationId);
+  const lastReadMessageId = parseAccountId(request.body?.lastReadMessageId);
+  if (!conversationId || !lastReadMessageId) return response.status(400).json({ error: "Conversa ou mensagem inválida." });
+  const employeeId = request.authenticatedEmployee.employee_id;
+  const isHrAdmin = request.authenticatedEmployee.is_hr_admin === true;
+  try {
+    const result = await pool.query(`
+      INSERT INTO public.employee_plan_task_issue_conversation_reads
+        (employee_plan_task_issue_conversation_id, employee_id, last_read_message_id)
+      SELECT $1, $2, $3
+      WHERE EXISTS (
+        SELECT 1
+        FROM public.employee_plan_task_issue_conversations AS conversation
+        INNER JOIN public.employee_plan_task_issues AS issue
+          ON issue.employee_plan_task_issue_id = conversation.employee_plan_task_issue_id
+        INNER JOIN public.employee_plan_tasks AS plan_task
+          ON plan_task.employee_plan_task_id = issue.employee_plan_task_id
+        WHERE conversation.employee_plan_task_issue_conversation_id = $1
+          AND conversation.last_message_at >= CURRENT_TIMESTAMP - INTERVAL '2 months'
+          AND ($4::boolean IS TRUE OR issue.employee_id = $2 OR plan_task.owner_employee_id = $2)
+      )
+        AND EXISTS (
+          SELECT 1 FROM public.employee_plan_task_issue_messages AS message
+          WHERE message.employee_plan_task_issue_conversation_id = $1
+            AND message.employee_plan_task_issue_message_id = $3
+        )
+      ON CONFLICT (employee_plan_task_issue_conversation_id, employee_id) DO UPDATE
+      SET last_read_message_id = GREATEST(
+            public.employee_plan_task_issue_conversation_reads.last_read_message_id,
+            EXCLUDED.last_read_message_id
+          ),
+          updated_at = CURRENT_TIMESTAMP
+      RETURNING last_read_message_id
+    `, [conversationId, employeeId, lastReadMessageId, isHrAdmin]);
+    if (!result.rowCount) return response.status(404).json({ error: "Conversa não encontrada ou expirada." });
+    const unreadCount = await getUnreadSupportMessageCount(employeeId, isHrAdmin);
+    return response.json({ unreadCount });
+  } catch (error) {
+    console.error("Could not mark support messages as read:", error.message);
+    return response.status(500).json({ error: "Não foi possível atualizar as notificações." });
+  }
+});
+
+app.post("/api/support/conversations/:conversationId/messages", requireAuthenticated, async (request, response) => {
+  const conversationId = parseAccountId(request.params.conversationId);
+  const body = typeof request.body?.body === "string" ? request.body.body.trim() : "";
+  if (!conversationId || !body || body.length > 4000) return response.status(400).json({ error: "Escreva uma mensagem de até 4.000 caracteres." });
+  const employeeId = request.authenticatedEmployee.employee_id;
+  const isHrAdmin = request.authenticatedEmployee.is_hr_admin === true;
+  const client = await pool.connect();
+  try {
+    await client.query("BEGIN");
+    const access = await client.query(`
+      SELECT conversation.employee_plan_task_issue_conversation_id
+      FROM public.employee_plan_task_issue_conversations AS conversation
+      INNER JOIN public.employee_plan_task_issues AS issue
+        ON issue.employee_plan_task_issue_id = conversation.employee_plan_task_issue_id
+      INNER JOIN public.employee_plan_tasks AS plan_task
+        ON plan_task.employee_plan_task_id = issue.employee_plan_task_id
+      WHERE conversation.employee_plan_task_issue_conversation_id = $1
+        AND conversation.last_message_at >= CURRENT_TIMESTAMP - INTERVAL '2 months'
+        AND ($2::boolean IS TRUE OR issue.employee_id = $3 OR plan_task.owner_employee_id = $3)
+      FOR UPDATE OF conversation
+    `, [conversationId, isHrAdmin, employeeId]);
+    if (!access.rowCount) {
+      await client.query("ROLLBACK");
+      return response.status(404).json({ error: "Conversa não encontrada ou expirada." });
+    }
+    const message = await client.query(`
+      INSERT INTO public.employee_plan_task_issue_messages
+        (employee_plan_task_issue_conversation_id, sender_employee_id, body)
+      VALUES ($1, $2, $3)
+      RETURNING employee_plan_task_issue_message_id AS id, sender_employee_id AS "senderId",
+        body, sent_at AS "sentAt"
+    `, [conversationId, employeeId, body]);
+    const sender = await client.query("SELECT full_name FROM public.employees WHERE employee_id = $1", [employeeId]);
+    await client.query(`
+      UPDATE public.employee_plan_task_issue_conversations
+      SET last_message_at = $2, updated_at = CURRENT_TIMESTAMP
+      WHERE employee_plan_task_issue_conversation_id = $1
+    `, [conversationId, message.rows[0].sentAt]);
+    await client.query("COMMIT");
+    return response.status(201).json({ ...message.rows[0], senderName: sender.rows[0]?.full_name ?? "" });
+  } catch (error) {
+    await client.query("ROLLBACK").catch(() => undefined);
+    console.error("Could not send support message:", error.message);
+    return response.status(500).json({ error: "Não foi possível enviar a mensagem." });
+  } finally {
+    client.release();
+  }
+});
+
+app.post("/api/support/conversations/:conversationId/resolution-request", requireAuthenticated, async (request, response) => {
+  const conversationId = parseAccountId(request.params.conversationId);
+  if (!conversationId) return response.status(400).json({ error: "Conversa inválida." });
+  const employeeId = request.authenticatedEmployee.employee_id;
+  const isHrAdmin = request.authenticatedEmployee.is_hr_admin === true;
+  const client = await pool.connect();
+  try {
+    await client.query("BEGIN");
+    const access = await client.query(`
+      SELECT conversation.status, issue.employee_id AS "reporterId",
+        plan_task.owner_employee_id AS "ownerId", reporter.full_name AS "reporterName",
+        owner.full_name AS "ownerName", actor.full_name AS "actorName"
+      FROM public.employee_plan_task_issue_conversations AS conversation
+      INNER JOIN public.employee_plan_task_issues AS issue
+        ON issue.employee_plan_task_issue_id = conversation.employee_plan_task_issue_id
+      INNER JOIN public.employee_plan_tasks AS plan_task
+        ON plan_task.employee_plan_task_id = issue.employee_plan_task_id
+      INNER JOIN public.employees AS reporter ON reporter.employee_id = issue.employee_id
+      INNER JOIN public.employees AS actor ON actor.employee_id = $2
+      LEFT JOIN public.employees AS owner ON owner.employee_id = plan_task.owner_employee_id
+      WHERE conversation.employee_plan_task_issue_conversation_id = $1
+        AND conversation.last_message_at >= CURRENT_TIMESTAMP - INTERVAL '2 months'
+        AND ($3::boolean IS TRUE OR issue.employee_id = $2 OR plan_task.owner_employee_id = $2)
+      FOR UPDATE OF conversation
+    `, [conversationId, employeeId, isHrAdmin]);
+    if (!access.rowCount) {
+      await client.query("ROLLBACK");
+      return response.status(404).json({ error: "Conversa não encontrada ou expirada." });
+    }
+    const conversation = access.rows[0];
+    if (conversation.status !== "open") {
+      await client.query("ROLLBACK");
+      return response.status(409).json({ error: "Esta conversa não está aberta para uma nova solicitação." });
+    }
+    const respondentId = Number(employeeId) === Number(conversation.reporterId)
+      ? conversation.ownerId
+      : conversation.reporterId;
+    const respondentName = Number(employeeId) === Number(conversation.reporterId)
+      ? conversation.ownerName
+      : conversation.reporterName;
+    if (!respondentId || Number(respondentId) === Number(employeeId)) {
+      await client.query("ROLLBACK");
+      return response.status(409).json({ error: "Não há outra pessoa nesta conversa para confirmar a resolução." });
+    }
+    await client.query(`
+      UPDATE public.employee_plan_task_issue_conversations
+      SET status = 'pending_confirmation', resolution_requested_by_employee_id = $2,
+        resolution_respondent_employee_id = $3, resolution_requested_at = CURRENT_TIMESTAMP,
+        resolution_due_at = CURRENT_TIMESTAMP + INTERVAL '3 days', updated_at = CURRENT_TIMESTAMP
+      WHERE employee_plan_task_issue_conversation_id = $1
+    `, [conversationId, employeeId, respondentId]);
+    await insertSupportSystemMessage(client, conversationId,
+      `${conversation.actorName} solicitou a confirmação da resolução. ${respondentName} tem três dias para confirmar ou rejeitar.`);
+    await client.query("COMMIT");
+    return response.json({ status: "pending_confirmation" });
+  } catch (error) {
+    await client.query("ROLLBACK").catch(() => undefined);
+    console.error("Could not request support resolution:", error.message);
+    return response.status(500).json({ error: "Não foi possível solicitar a confirmação." });
+  } finally {
+    client.release();
+  }
+});
+
+app.post("/api/support/conversations/:conversationId/resolution-response", requireAuthenticated, async (request, response) => {
+  const conversationId = parseAccountId(request.params.conversationId);
+  const action = request.body?.action;
+  const reason = typeof request.body?.reason === "string" ? request.body.reason.trim() : "";
+  if (!conversationId || !["confirm", "reject"].includes(action)) return response.status(400).json({ error: "Informe uma decisão válida." });
+  if (action === "reject" && (!reason || reason.length > 2000)) return response.status(400).json({ error: "Escreva uma justificativa de até 2.000 caracteres." });
+  const employeeId = request.authenticatedEmployee.employee_id;
+  const isHrAdmin = request.authenticatedEmployee.is_hr_admin === true;
+  const client = await pool.connect();
+  try {
+    await client.query("BEGIN");
+    const access = await client.query(`
+      SELECT conversation.status, conversation.resolution_due_at AS "resolutionDueAt",
+        conversation.resolution_requested_by_employee_id AS "requestedById",
+        conversation.resolution_respondent_employee_id AS "respondentId", actor.full_name AS "actorName"
+      FROM public.employee_plan_task_issue_conversations AS conversation
+      INNER JOIN public.employee_plan_task_issues AS issue
+        ON issue.employee_plan_task_issue_id = conversation.employee_plan_task_issue_id
+      INNER JOIN public.employee_plan_tasks AS plan_task
+        ON plan_task.employee_plan_task_id = issue.employee_plan_task_id
+      INNER JOIN public.employees AS actor ON actor.employee_id = $2
+      WHERE conversation.employee_plan_task_issue_conversation_id = $1
+        AND conversation.last_message_at >= CURRENT_TIMESTAMP - INTERVAL '2 months'
+        AND ($3::boolean IS TRUE OR issue.employee_id = $2 OR plan_task.owner_employee_id = $2)
+      FOR UPDATE OF conversation
+    `, [conversationId, employeeId, isHrAdmin]);
+    if (!access.rowCount) {
+      await client.query("ROLLBACK");
+      return response.status(404).json({ error: "Conversa não encontrada ou expirada." });
+    }
+    const conversation = access.rows[0];
+    if (conversation.status !== "pending_confirmation") {
+      await client.query("ROLLBACK");
+      return response.status(409).json({ error: "Não há uma resolução aguardando confirmação." });
+    }
+    if (new Date(conversation.resolutionDueAt).getTime() <= Date.now()) {
+      await client.query(`
+        UPDATE public.employee_plan_task_issue_conversations
+        SET status = 'resolved', resolution_due_at = NULL, updated_at = CURRENT_TIMESTAMP
+        WHERE employee_plan_task_issue_conversation_id = $1
+      `, [conversationId]);
+      await insertSupportSystemMessage(client, conversationId,
+        "O prazo de três dias terminou sem rejeição. A resolução foi confirmada automaticamente.");
+      await client.query("COMMIT");
+      return response.json({ status: "resolved", autoConfirmed: true });
+    }
+    if (Number(conversation.requestedById) === Number(employeeId) ||
+      (Number(conversation.respondentId) !== Number(employeeId) && !isHrAdmin)) {
+      await client.query("ROLLBACK");
+      return response.status(403).json({ error: "Apenas a outra pessoa da conversa pode responder à solicitação." });
+    }
+    if (action === "confirm") {
+      await client.query(`
+        UPDATE public.employee_plan_task_issue_conversations
+        SET status = 'resolved', resolution_due_at = NULL, updated_at = CURRENT_TIMESTAMP
+        WHERE employee_plan_task_issue_conversation_id = $1
+      `, [conversationId]);
+      await insertSupportSystemMessage(client, conversationId,
+        `${conversation.actorName} confirmou a resolução do problema.`);
+    } else {
+      const message = await client.query(`
+        INSERT INTO public.employee_plan_task_issue_messages
+          (employee_plan_task_issue_conversation_id, sender_employee_id, body)
+        VALUES ($1, $2, $3)
+        RETURNING sent_at AS "sentAt"
+      `, [conversationId, employeeId, `Solicitação de resolução rejeitada. Justificativa: ${reason}`]);
+      await client.query(`
+        UPDATE public.employee_plan_task_issue_conversations
+        SET status = 'open', resolution_requested_by_employee_id = NULL,
+          resolution_respondent_employee_id = NULL, resolution_requested_at = NULL,
+          resolution_due_at = NULL, last_message_at = $2, updated_at = CURRENT_TIMESTAMP
+        WHERE employee_plan_task_issue_conversation_id = $1
+      `, [conversationId, message.rows[0].sentAt]);
+    }
+    await client.query("COMMIT");
+    return response.json({ status: action === "confirm" ? "resolved" : "open" });
+  } catch (error) {
+    await client.query("ROLLBACK").catch(() => undefined);
+    console.error("Could not respond to support resolution:", error.message);
+    return response.status(500).json({ error: "Não foi possível registrar a decisão." });
+  } finally {
+    client.release();
+  }
+});
+
+app.patch("/api/support/conversations/:conversationId/status", requireAuthenticated, async (request, response) => {
+  const conversationId = parseAccountId(request.params.conversationId);
+  if (!conversationId || request.body?.status !== "open") return response.status(400).json({ error: "Estado de conversa inválido." });
+  const employeeId = request.authenticatedEmployee.employee_id;
+  const isHrAdmin = request.authenticatedEmployee.is_hr_admin === true;
+  const client = await pool.connect();
+  try {
+    await client.query("BEGIN");
+    const access = await client.query(`
+      SELECT conversation.status, actor.full_name AS "actorName"
+      FROM public.employee_plan_task_issue_conversations AS conversation
+      INNER JOIN public.employee_plan_task_issues AS issue
+        ON issue.employee_plan_task_issue_id = conversation.employee_plan_task_issue_id
+      INNER JOIN public.employee_plan_tasks AS plan_task
+        ON plan_task.employee_plan_task_id = issue.employee_plan_task_id
+      INNER JOIN public.employees AS actor ON actor.employee_id = $2
+      WHERE conversation.employee_plan_task_issue_conversation_id = $1
+        AND conversation.last_message_at >= CURRENT_TIMESTAMP - INTERVAL '2 months'
+        AND ($3::boolean IS TRUE OR issue.employee_id = $2 OR plan_task.owner_employee_id = $2)
+      FOR UPDATE OF conversation
+    `, [conversationId, employeeId, isHrAdmin]);
+    if (!access.rowCount) {
+      await client.query("ROLLBACK");
+      return response.status(404).json({ error: "Conversa não encontrada ou expirada." });
+    }
+    if (access.rows[0].status !== "resolved") {
+      await client.query("ROLLBACK");
+      return response.status(409).json({ error: "Somente uma conversa resolvida pode ser reaberta." });
+    }
+    await client.query(`
+      UPDATE public.employee_plan_task_issue_conversations
+      SET status = 'open', resolution_requested_by_employee_id = NULL,
+        resolution_respondent_employee_id = NULL, resolution_requested_at = NULL,
+        resolution_due_at = NULL, updated_at = CURRENT_TIMESTAMP
+      WHERE employee_plan_task_issue_conversation_id = $1
+    `, [conversationId]);
+    await insertSupportSystemMessage(client, conversationId,
+      `${access.rows[0].actorName} reabriu o problema.`);
+    await client.query("COMMIT");
+    return response.json({ status: "open" });
+  } catch (error) {
+    await client.query("ROLLBACK").catch(() => undefined);
+    console.error("Could not reopen support conversation:", error.message);
+    return response.status(500).json({ error: "Não foi possível reabrir a conversa." });
+  } finally {
+    client.release();
   }
 });
 
@@ -184,6 +615,43 @@ async function requireHr(request, response, next) {
 function parseAccountId(value) {
   const accountId = Number(value);
   return Number.isSafeInteger(accountId) && accountId > 0 ? accountId : null;
+}
+
+async function getUnreadSupportMessageCount(employeeId, isHrAdmin) {
+  const result = await pool.query(`
+    SELECT COUNT(message.employee_plan_task_issue_message_id)::int AS count
+    FROM public.employee_plan_task_issue_messages AS message
+    INNER JOIN public.employee_plan_task_issue_conversations AS conversation
+      ON conversation.employee_plan_task_issue_conversation_id = message.employee_plan_task_issue_conversation_id
+    INNER JOIN public.employee_plan_task_issues AS issue
+      ON issue.employee_plan_task_issue_id = conversation.employee_plan_task_issue_id
+    INNER JOIN public.employee_plan_tasks AS plan_task
+      ON plan_task.employee_plan_task_id = issue.employee_plan_task_id
+    LEFT JOIN public.employee_plan_task_issue_conversation_reads AS conversation_read
+      ON conversation_read.employee_plan_task_issue_conversation_id = conversation.employee_plan_task_issue_conversation_id
+      AND conversation_read.employee_id = $2
+    WHERE conversation.last_message_at >= CURRENT_TIMESTAMP - INTERVAL '2 months'
+      AND message.sender_employee_id IS DISTINCT FROM $2
+      AND (conversation_read.last_read_message_id IS NULL
+        OR message.employee_plan_task_issue_message_id > conversation_read.last_read_message_id)
+      AND ($1::boolean IS TRUE OR issue.employee_id = $2 OR plan_task.owner_employee_id = $2)
+  `, [isHrAdmin, employeeId]);
+  return result.rows[0]?.count ?? 0;
+}
+
+async function insertSupportSystemMessage(client, conversationId, body) {
+  const message = await client.query(`
+    INSERT INTO public.employee_plan_task_issue_messages
+      (employee_plan_task_issue_conversation_id, sender_employee_id, body, is_system)
+    VALUES ($1, NULL, $2, TRUE)
+    RETURNING sent_at AS "sentAt"
+  `, [conversationId, body]);
+  await client.query(`
+    UPDATE public.employee_plan_task_issue_conversations
+    SET last_message_at = $2, updated_at = CURRENT_TIMESTAMP
+    WHERE employee_plan_task_issue_conversation_id = $1
+  `, [conversationId, message.rows[0].sentAt]);
+  return message.rows[0].sentAt;
 }
 
 function parseOrganizationIds(value, legacyId) {
@@ -1229,6 +1697,25 @@ app.get("/api/me/profile-photo", requireAuthenticated, async (request, response)
   }
 });
 
+app.get("/api/employees/:employeeId", requireAuthenticated, async (request, response) => {
+  const employeeId = parseAccountId(request.params.employeeId);
+  if (!employeeId) return response.status(400).json({ error: "Pessoa inválida." });
+  try {
+    const result = await pool.query(`
+      SELECT employee.employee_id AS id, employee.full_name AS name, employee.email,
+        employee.job_title AS "jobTitle", department.name AS department, FALSE AS "isHrAdmin"
+      FROM public.employees AS employee
+      LEFT JOIN public.departments AS department ON department.department_id = employee.department_id
+      WHERE employee.employee_id = $1 AND employee.is_active IS TRUE
+    `, [employeeId]);
+    if (!result.rowCount) return response.status(404).json({ error: "Pessoa não encontrada." });
+    return response.json(result.rows[0]);
+  } catch (error) {
+    console.error("Could not load employee profile:", error.message);
+    return response.status(500).json({ error: "Não foi possível carregar o perfil." });
+  }
+});
+
 app.get("/api/employees/:employeeId/profile-photo", requireAuthenticated, async (request, response) => {
   const employeeId = parseAccountId(request.params.employeeId);
   if (!employeeId) return response.status(400).json({ error: "Pessoa inválida." });
@@ -1495,6 +1982,54 @@ app.get(/.*/, (_request, response, next) => {
 const server = app.listen(port, listenHost, () => {
   console.log(`OnRamp server listening on ${listenHost}:${port}`);
 });
+
+async function cleanupExpiredSupportConversations() {
+  const result = await pool.query(`
+    DELETE FROM public.employee_plan_task_issues AS issue
+    USING public.employee_plan_task_issue_conversations AS conversation
+    WHERE conversation.employee_plan_task_issue_id = issue.employee_plan_task_issue_id
+      AND conversation.last_message_at < CURRENT_TIMESTAMP - INTERVAL '2 months'
+  `);
+  if (result.rowCount > 0) console.log(`Deleted ${result.rowCount} expired support conversation${result.rowCount === 1 ? "" : "s"}.`);
+  await autoConfirmExpiredSupportResolutions();
+}
+
+async function autoConfirmExpiredSupportResolutions() {
+  const client = await pool.connect();
+  try {
+    await client.query("BEGIN");
+    const due = await client.query(`
+      SELECT conversation.employee_plan_task_issue_conversation_id AS id
+      FROM public.employee_plan_task_issue_conversations AS conversation
+      WHERE conversation.status = 'pending_confirmation'
+        AND conversation.resolution_due_at <= CURRENT_TIMESTAMP
+      ORDER BY conversation.resolution_due_at
+      LIMIT 100
+      FOR UPDATE SKIP LOCKED
+    `);
+    for (const { id } of due.rows) {
+      await client.query(`
+        UPDATE public.employee_plan_task_issue_conversations
+        SET status = 'resolved', resolution_due_at = NULL, updated_at = CURRENT_TIMESTAMP
+        WHERE employee_plan_task_issue_conversation_id = $1
+      `, [id]);
+      await insertSupportSystemMessage(client, id,
+        "O prazo de três dias terminou sem rejeição. A resolução foi confirmada automaticamente.");
+    }
+    await client.query("COMMIT");
+  } catch (error) {
+    await client.query("ROLLBACK").catch(() => undefined);
+    throw error;
+  } finally {
+    client.release();
+  }
+}
+
+void cleanupExpiredSupportConversations().catch((error) => console.error("Could not delete expired support conversations:", error.message));
+const supportConversationCleanupTimer = setInterval(() => {
+  void cleanupExpiredSupportConversations().catch((error) => console.error("Could not delete expired support conversations:", error.message));
+}, 60_000);
+supportConversationCleanupTimer.unref();
 
 async function shutdown() {
   server.close(async () => {

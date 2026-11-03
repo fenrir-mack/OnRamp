@@ -47,9 +47,12 @@ try {
   const employeeOrganizationMigration = await readFile(new URL("../database/postgresql/014-employee-organization.sql", import.meta.url), "utf8");
   const teamHierarchyMigration = await readFile(new URL("../database/postgresql/015-team-hierarchies.sql", import.meta.url), "utf8");
   const employeePlanProgressMigration = await readFile(new URL("../database/postgresql/016-employee-plan-progress.sql", import.meta.url), "utf8");
+  const supportConversationsMigration = await readFile(new URL("../database/postgresql/017-support-conversations.sql", import.meta.url), "utf8");
+  const supportMessageReadsMigration = await readFile(new URL("../database/postgresql/018-support-message-reads.sql", import.meta.url), "utf8");
+  const supportResolutionConfirmationMigration = await readFile(new URL("../database/postgresql/019-support-resolution-confirmation.sql", import.meta.url), "utf8");
   const seed = await readFile(new URL("../database/postgresql/002-seed.sql", import.meta.url), "utf8");
   const resources = await readFile(new URL("../database/postgresql/003-local-resources.sql", import.meta.url), "utf8");
-  await database.query(`BEGIN;\n${schema}\n${authMigration}\n${hrPlansMigration}\n${hrAccessMigration}\n${planResourcesMigration}\n${planConfigurationsMigration}\n${resourceFilesMigration}\n${removeResourceEstimatedMinutesMigration}\n${hrTaskPresetsMigration}\n${taskResponsiblePeopleMigration}\n${seed}\n${resources}\n${preEntryTaskPresets}\n${employeeOrganizationMigration}\n${teamHierarchyMigration}\n${employeePlanProgressMigration}\nCOMMIT;`);
+  await database.query(`BEGIN;\n${schema}\n${authMigration}\n${hrPlansMigration}\n${hrAccessMigration}\n${planResourcesMigration}\n${planConfigurationsMigration}\n${resourceFilesMigration}\n${removeResourceEstimatedMinutesMigration}\n${hrTaskPresetsMigration}\n${taskResponsiblePeopleMigration}\n${seed}\n${resources}\n${preEntryTaskPresets}\n${employeeOrganizationMigration}\n${teamHierarchyMigration}\n${employeePlanProgressMigration}\n${supportConversationsMigration}\n${supportMessageReadsMigration}\n${supportResolutionConfirmationMigration}\nCOMMIT;`);
   console.log(existingSchema.rows[0].table_name
     ? "OnRamp schema exists; demo data is up to date."
     : "OnRamp schema and demo data are ready.");
