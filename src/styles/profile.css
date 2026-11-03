@@ -5,7 +5,7 @@
 .profile-page__status { display: inline-flex; align-items: center; gap: 8px; border: 1px solid #d8f0e3; border-radius: 999px; background: #f0faf4; padding: 9px 13px; color: #32845f; font-size: 12px; font-weight: 800; white-space: nowrap; }
 .profile-page__status span { width: 8px; height: 8px; border-radius: 50%; background: #42b47c; }
 .profile-card, .profile-details { overflow: hidden; border: 1px solid #ececf3; border-radius: 20px; background: white; box-shadow: 0 5px 20px rgba(43, 45, 80, 0.035); }
-.profile-card__cover { height: 128px; background: radial-gradient(circle at 85% 20%, rgba(255,255,255,.2) 0 72px, transparent 73px), linear-gradient(115deg, #5556d8, #7778e8); }
+.profile-card__cover { height: 84px; background: radial-gradient(circle at 85% 20%, rgba(255,255,255,.2) 0 72px, transparent 73px), linear-gradient(115deg, #5556d8, #7778e8); }
 .profile-card__body { padding: 0 30px 24px; }
 .profile-card__identity { display: flex; align-items: end; gap: 20px; margin-top: -43px; }
 .profile-avatar { position: relative; display: grid; width: 112px; height: 112px; flex: 0 0 auto; place-items: center; overflow: visible; border: 5px solid white; border-radius: 50%; background: linear-gradient(145deg, #ededff, #d9d9ff); color: #5556d8; font-size: 32px; font-weight: 800; box-shadow: 0 3px 12px rgba(32, 34, 58, .12); }
@@ -30,12 +30,27 @@
 .profile-detail > div { display: grid; min-width: 0; gap: 4px; }
 .profile-detail > div span { color: #898ba0; font-size: 11px; font-weight: 600; }
 .profile-detail strong { overflow: hidden; color: #33354d; font-size: 13px; font-weight: 800; text-overflow: ellipsis; white-space: nowrap; }
+.profile-crop-overlay { position: fixed; inset: 0; z-index: 60; display: grid; place-items: center; overflow-y: auto; background: rgba(24, 25, 45, .55); padding: 20px; }
+.profile-crop-dialog { width: min(100%, 460px); border: 1px solid #e8e8f0; border-radius: 20px; background: white; padding: 24px; box-shadow: 0 24px 70px rgba(20, 21, 48, .25); }
+.profile-crop-dialog__heading { display: flex; justify-content: space-between; gap: 14px; }
+.profile-crop-dialog__heading h2 { margin-top: 3px; color: #303249; font-size: 19px; font-weight: 800; }
+.profile-crop-dialog__heading p:last-child { margin-top: 5px; color: #85879a; font-size: 12px; }
+.profile-crop-dialog__close { display: grid; width: 34px; height: 34px; flex: 0 0 auto; place-items: center; border-radius: 10px; color: #777a91; font-size: 24px; line-height: 1; }
+.profile-crop-dialog__close:hover { background: #f3f3f8; }
+.profile-crop-frame { position: relative; width: min(100%, 320px); aspect-ratio: 1; overflow: hidden; margin: 20px auto 0; border-radius: 14px; background: #171827; cursor: grab; touch-action: none; user-select: none; }
+.profile-crop-frame:active { cursor: grabbing; }
+.profile-crop-frame img { position: absolute; max-width: none; pointer-events: none; }
+.profile-crop-zoom { display: flex; align-items: center; gap: 14px; margin-top: 18px; color: #777a91; font-size: 12px; font-weight: 800; }
+.profile-crop-zoom input { flex: 1; accent-color: #5b5ce2; }
+.profile-crop-dialog__actions { display: flex; justify-content: flex-end; gap: 10px; margin-top: 20px; }
+.profile-crop-cancel { border: 1px solid #e5e5ef; border-radius: 11px; padding: 0 16px; color: #66687d; font-size: 12px; font-weight: 800; }
+.profile-crop-cancel:hover { background: #f7f7fb; }
 
 @media (max-width: 640px) {
   .profile-page__heading { align-items: flex-start; }
   .profile-page__heading h1 { font-size: 26px; }
   .profile-page__status { padding: 7px 9px; font-size: 10px; }
-  .profile-card__cover { height: 96px; }
+  .profile-card__cover { height: 64px; }
   .profile-card__body { padding: 0 17px 20px; }
   .profile-card__identity { flex-wrap: wrap; gap: 13px; margin-top: -36px; }
   .profile-avatar { width: 90px; height: 90px; font-size: 27px; }
@@ -49,4 +64,5 @@
   .profile-details__grid { grid-template-columns: 1fr; }
   .profile-detail, .profile-detail:nth-last-child(-n+2) { border-bottom: 1px solid #f0f0f5; }
   .profile-detail:last-child { border-bottom: 0; }
+  .profile-crop-dialog { padding: 19px 16px; }
 }

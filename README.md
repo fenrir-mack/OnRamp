@@ -40,13 +40,13 @@ npm install
 
 ## 4. Configure a conexão com o PostgreSQL
 
-Crie seu arquivo local `.env` a partir do exemplo:
+Crie seu arquivo local `.env.local` a partir do exemplo:
 
 ```powershell
-Copy-Item .env.example .env
+Copy-Item .env.example .env.local
 ```
 
-Abra `.env` e informe a senha definida para o usuário PostgreSQL. Exemplo para uma instalação local padrão:
+Abra `.env.local` e informe a senha definida para o usuário PostgreSQL. Exemplo para uma instalação local padrão:
 
 ```dotenv
 PGHOST=127.0.0.1
@@ -59,13 +59,13 @@ API_PORT=3000
 ONRAMP_FILE_STORAGE_PATH=storage/files
 ```
 
-Não inclua aspas em volta dos valores. `.env` contém credenciais locais e não deve ser enviado ao Git. O usuário PostgreSQL informado precisa poder criar bancos; o script criará o banco `onramp` se ele ainda não existir. Se você usa outro host, porta, nome de banco ou usuário, ajuste os valores.
+Não inclua aspas em volta dos valores. `.env.local` contém credenciais locais e não deve ser enviado ao Git. O usuário PostgreSQL informado precisa poder criar bancos; o script criará o banco `onramp` se ele ainda não existir. Se você usa outro host, porta, nome de banco ou usuário, ajuste os valores.
 
-> No macOS/Linux, o comando para copiar o exemplo é `cp .env.example .env`.
+> No macOS/Linux, o comando para copiar o exemplo é `cp .env.example .env.local`.
 
 ## 5. Crie e prepare o banco
 
-Com o serviço PostgreSQL ligado e o `.env` preenchido, rode:
+Com o serviço PostgreSQL ligado e o `.env.local` preenchido, rode:
 
 ```powershell
 npm run db:setup
@@ -73,7 +73,9 @@ npm run db:setup
 
 O comando cria o banco `onramp` quando necessário e aplica o schema, as migrações e os dados locais, incluindo as contas de teste e os pacotes iniciais de pré-entrada. Pode ser executado novamente para atualizar os dados de demonstração.
 
-Se a conexão falhar, confira se o serviço PostgreSQL está ligado e se `PGHOST`, `PGPORT`, `PGUSER` e `PGPASSWORD` em `.env` correspondem à instalação local. Para um PostgreSQL hospedado que exige TLS, defina `PGSSL=true`.
+Se a conexão falhar, confira se o serviço PostgreSQL está ligado e se `PGHOST`, `PGPORT`, `PGUSER` e `PGPASSWORD` em `.env.local` correspondem à instalação local. Para um PostgreSQL hospedado que exige TLS, defina `PGSSL=true`.
+
+Para aplicar o schema no banco da nuvem, configure as credenciais em `.env.cloud` e rode `npm run db:setup:cloud`. Esse comando executa o mesmo setup e os mesmos dados iniciais no servidor configurado ali; confira `PGHOST` e `PGDATABASE` antes de usá-lo.
 
 ## 6. Inicie a aplicação
 
@@ -127,7 +129,7 @@ Use o usuário administrador do PostgreSQL. O script cria o banco `onramp` se el
 
 ### 2. Criar tabelas e dados iniciais
 
-No `.env` local (que não deve ser enviado ao Git), coloque os dados do Flexible Server:
+No `.env.cloud` (que não deve ser enviado ao Git), coloque os dados do Flexible Server:
 
 ```dotenv
 PGHOST=<servidor>.postgres.database.azure.com
@@ -140,7 +142,7 @@ API_PORT=3000
 ONRAMP_FILE_STORAGE_PATH=storage/files
 ```
 
-No terminal, rode `npm run db:setup`. Isso cria o esquema e as tabelas, aplica as migrações até `016` e inclui os dados iniciais usados pelo app. O setup pode ser repetido para atualizar o banco.
+No terminal, rode `npm run db:setup:cloud`. Isso cria o esquema e as tabelas, aplica as migrações até `016` e inclui os dados iniciais usados pelo app. O setup pode ser repetido para atualizar o banco.
 
 ### 3. Configurar o App Service
 

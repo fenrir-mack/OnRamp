@@ -6,6 +6,7 @@ export type IconName =
   | "briefcase"
   | "calendar"
   | "check"
+  | "chat"
   | "chevron"
   | "clock"
   | "grid"
@@ -57,6 +58,7 @@ export function Icon({ name, size = 20 }: { name: IconName; size?: number }) {
       </>
     ),
     check: <path d="m5 12 4 4L19 6" />,
+    chat: <path d="M21 11.5a8.5 8.5 0 0 1-8.5 8.5 8.4 8.4 0 0 1-4-.9L3 21l1.9-5.5a8.4 8.4 0 0 1-.9-4A8.5 8.5 0 1 1 21 11.5Z" />,
     chevron: <path d="m9 18 6-6-6-6" />,
     clock: (
       <>

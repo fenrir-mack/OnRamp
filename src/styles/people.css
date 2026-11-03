@@ -22,6 +22,19 @@
 .people-directory__tab:hover { color: #4f5169; }
 .people-directory__tab--active { background: #efefff; color: #5556d8 !important; }
 
+.people-back-button { display: inline-flex; align-items: center; gap: 7px; color: #5b5ce2; font-size: 13px; font-weight: 800; }
+.people-back-button svg { transform: rotate(180deg); }
+.people-see-more { display: flex; width: 100%; align-items: center; justify-content: center; gap: 7px; border-top: 1px solid #eeeeF4; margin-top: 12px; padding-top: 13px; color: #5556d8; font-size: 12px; font-weight: 800; }
+.people-see-more:hover, .people-back-button:hover { color: #4142bd; }
+.people-person { width: 100%; text-align: left; cursor: pointer; transition: 150ms ease; }
+.people-person:hover { border-color: #e2e0fa; background: #f8f7ff; }
+.people-area-page { min-height: 65vh; padding: 28px; }
+.people-area-page__heading { display: flex; align-items: center; gap: 15px; border-bottom: 1px solid #eeeeF4; padding-bottom: 22px; }
+.people-area-page__heading h1 { margin-top: 3px; color: #303249; font-size: 25px; font-weight: 800; letter-spacing: -.03em; }
+.people-area-page__heading p:last-child { margin-top: 4px; color: #85879a; font-size: 13px; }
+.people-area-page__members { display: grid; grid-template-columns: repeat(auto-fill, minmax(min(100%, 280px), 1fr)); gap: 12px; padding-top: 20px; }
+.people-area-page__members .people-person { border-color: #eeeeF4; padding: 12px; }
+
 .team-card {
   display: grid;
   gap: 20px;
@@ -75,6 +88,8 @@
 .org-team-card__label { display: block; margin-bottom: 9px; color: #85879a; font-size: 9px; font-weight: 800; letter-spacing: .08em; text-transform: uppercase; }
 .org-team-card__people { display: grid; grid-template-columns: repeat(auto-fill, minmax(min(100%, 210px), 1fr)); gap: 8px; }
 .org-team-person { display: flex; min-width: 0; align-items: center; gap: 9px; border: 1px solid #eeeeF4; border-radius: 12px; background: #fbfbfd; padding: 7px 9px; }
+.org-team-person { width: 100%; text-align: left; cursor: pointer; transition: 150ms ease; }
+.org-team-person:hover { border-color: #dcdaf8; background: #f7f6ff; }
 .org-team-person--leader { border-color: #e2e0fa; background: #f8f7ff; }
 .org-team-person > span:nth-child(2) { display: grid; min-width: 0; gap: 2px; }
 .org-team-person strong { overflow: hidden; color: #393b52; font-size: 11px; font-weight: 800; text-overflow: ellipsis; white-space: nowrap; }
@@ -87,6 +102,10 @@
 }
 
 @media (max-width: 640px) {
+  .people-area-page { padding: 19px 15px; }
+  .people-area-page__heading { align-items: flex-start; flex-wrap: wrap; }
+  .people-area-page__heading h1 { font-size: 21px; }
+  .people-area-page__heading > span:last-child { margin-left: auto; }
   .org-chart { padding: 17px 13px; }
   .org-chart__heading { align-items: flex-start; }
   .org-chart__heading h2 { font-size: 16px; }

@@ -1345,7 +1345,7 @@ app.get("/api/organization", requireAuthenticated, async (_request, response) =>
         SELECT department.department_id AS id, department.name, department.description,
           COALESCE((
             SELECT json_agg(json_build_object(
-              'id', employee.employee_id, 'name', employee.full_name, 'jobTitle', employee.job_title
+              'id', employee.employee_id, 'name', employee.full_name, 'email', employee.email, 'jobTitle', employee.job_title
             ) ORDER BY employee.full_name)
             FROM public.employee_departments AS membership
             INNER JOIN public.employees AS employee ON employee.employee_id = membership.employee_id
@@ -1359,7 +1359,7 @@ app.get("/api/organization", requireAuthenticated, async (_request, response) =>
           team.parent_team_id AS "parentTeamId", parent.name AS "parentTeamName",
           COALESCE((
             SELECT json_agg(json_build_object(
-              'id', employee.employee_id, 'name', employee.full_name, 'jobTitle', employee.job_title,
+              'id', employee.employee_id, 'name', employee.full_name, 'email', employee.email, 'jobTitle', employee.job_title,
               'isLeader', EXISTS (SELECT 1 FROM public.team_leaders AS leader
                 WHERE leader.team_id = team.team_id AND leader.employee_id = employee.employee_id)
             ) ORDER BY employee.full_name)
@@ -1368,7 +1368,7 @@ app.get("/api/organization", requireAuthenticated, async (_request, response) =>
             WHERE membership.team_id = team.team_id AND employee.is_active IS TRUE
           ), '[]'::json) AS members,
           COALESCE((
-            SELECT json_agg(json_build_object('id', employee.employee_id, 'name', employee.full_name, 'jobTitle', employee.job_title) ORDER BY employee.full_name)
+            SELECT json_agg(json_build_object('id', employee.employee_id, 'name', employee.full_name, 'email', employee.email, 'jobTitle', employee.job_title) ORDER BY employee.full_name)
             FROM public.team_leaders AS leader
             INNER JOIN public.employees AS employee ON employee.employee_id = leader.employee_id
             WHERE leader.team_id = team.team_id AND employee.is_active IS TRUE
