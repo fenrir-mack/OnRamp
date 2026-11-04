@@ -11,6 +11,7 @@ type Account = {
   department: string | null;
   departmentId?: number | null;
   departmentIds: number[];
+  preparationDepartmentIds: number[];
   departments: string[];
   teamIds: number[];
   teams: string[];
@@ -18,13 +19,14 @@ type Account = {
   managerName?: string | null;
   mentorEmployeeId?: number | null;
   mentorName?: string | null;
+  startDate: string;
   isActive: boolean;
   planTaskCount: number;
 };
 
 type Department = { id: number; name: string; description?: string | null; memberCount?: number };
 type Team = { id: number; name: string; description: string | null; parentTeamId: number | null; parentTeamName: string | null; memberIds: number[]; memberCount: number; leaderIds: number[]; leaders: string[] };
-type ResponsiblePerson = { id: number; name: string; jobTitle: string | null; department: string | null };
+type ResponsiblePerson = { id: number; name: string; jobTitle: string | null; department: string | null; departmentId?: number | null };
 
 type Resource = {
   id: number;
@@ -60,6 +62,7 @@ type PlanTask = {
   ownerRole: string;
   ownerEmployeeId: number | null;
   ownerName?: string | null;
+  responsibleDepartmentId?: number | null;
   dueOffsetDays: number;
   required: boolean;
 };
@@ -78,8 +81,10 @@ type TaskDraft = {
   stageTemplateId: string;
   title: string;
   description: string;
+  category: string;
   taskType: PlanTask["taskType"];
   ownerEmployeeId: string;
+  responsibleDepartmentId: string;
   dueOffsetDays: string;
   required: boolean;
 };
@@ -128,19 +133,28 @@ function getDescendantTeamIds(teams: Team[], teamId: number) {
   return excluded;
 }
 
+function formatDueOffset(days: number) {
+  const absoluteDays = Math.abs(days);
+  const unit = absoluteDays === 1 ? "dia" : "dias";
+  return days < 0 ? `${absoluteDays} ${unit} antes da entrada` : `${absoluteDays} ${unit} após a entrada`;
+}
+
 const taskTypeLabels: Record<PlanTask["taskType"], string> = {
   task: "Tarefa",
   preparation: "Preparação",
   training: "Treinamento",
   checkin: "Check-in",
 };
+const preparationCategories = ["Contas e aplicativos", "Equipamento", "Documentos e aprovações legais", "Transporte", "Chegada no primeiro dia", "Geral"];
 
 const emptyDraft: TaskDraft = {
   stageTemplateId: "",
   title: "",
   description: "",
+  category: "Contas e aplicativos",
   taskType: "task",
   ownerEmployeeId: "",
+  responsibleDepartmentId: "",
   dueOffsetDays: "0",
   required: true,
 };
@@ -191,7 +205,7 @@ function HrPlansView({ section }: { section: "people" | "plans" }) {
   const [planResources, setPlanResources] = useState<PlanResource[]>([]);
   const [creatingAccount, setCreatingAccount] = useState(false);
   const [showAccountForm, setShowAccountForm] = useState(false);
-  const [accountDraft, setAccountDraft] = useState({ name: "", email: "", jobTitle: "", departmentIds: [] as number[], teamIds: [] as number[], managerEmployeeId: "", mentorEmployeeId: "", password: "" });
+  const [accountDraft, setAccountDraft] = useState({ name: "", email: "", jobTitle: "", departmentIds: [] as number[], preparationDepartmentIds: [] as number[], teamIds: [] as number[], managerEmployeeId: "", mentorEmployeeId: "", startDate: new Date(Date.now() - new Date().getTimezoneOffset() * 60_000).toISOString().slice(0, 10), password: "" });
   const [teamSearch, setTeamSearch] = useState("");
   const [editingAccountId, setEditingAccountId] = useState<number | null>(null);
   const [peopleSearch, setPeopleSearch] = useState("");
@@ -310,8 +324,9 @@ function HrPlansView({ section }: { section: "people" | "plans" }) {
       id, stageTemplateId: stage.id, stageName: stage.name,
       stageOrder: stage.display_order ?? stages.findIndex(({ id: stageId }) => stageId === stage.id),
       title: taskDraft.title.trim(), description: taskDraft.description.trim(),
-      category: taskTypeLabels[taskDraft.taskType], taskType: taskDraft.taskType,
+      category: taskDraft.category, taskType: taskDraft.taskType,
       ownerEmployeeId: Number(taskDraft.ownerEmployeeId),
+      responsibleDepartmentId: Number(taskDraft.responsibleDepartmentId) || owner.departmentId || null,
       ownerRole: owner.name,
       ownerName: owner.name,
       dueOffsetDays: Number(taskDraft.dueOffsetDays),
@@ -423,8 +438,10 @@ function HrPlansView({ section }: { section: "people" | "plans" }) {
       stageTemplateId: String(task.stageTemplateId),
       title: task.title,
       description: task.description,
+      category: task.category,
       taskType: task.taskType,
       ownerEmployeeId: String(task.ownerEmployeeId ?? responsiblePeople.find((person) => person.name === task.ownerRole)?.id ?? ""),
+      responsibleDepartmentId: String(task.responsibleDepartmentId ?? ""),
       dueOffsetDays: String(task.dueOffsetDays),
       required: task.required,
     });
@@ -564,11 +581,13 @@ function HrPlansView({ section }: { section: "people" | "plans" }) {
       email: account.email,
       jobTitle: account.jobTitle ?? "",
       departmentIds: account.departmentIds ?? (account.departmentId ? [account.departmentId] : []),
+      preparationDepartmentIds: account.preparationDepartmentIds ?? [],
       teamIds: account.teamIds ?? [],
       managerEmployeeId: String(account.managerEmployeeId ?? ""),
       mentorEmployeeId: String(account.mentorEmployeeId ?? ""),
+      startDate: account.startDate ?? new Date(Date.now() - new Date().getTimezoneOffset() * 60_000).toISOString().slice(0, 10),
       password: "",
-    } : { name: "", email: "", jobTitle: "", departmentIds: [], teamIds: [], managerEmployeeId: "", mentorEmployeeId: "", password: "" });
+    } : { name: "", email: "", jobTitle: "", departmentIds: [], preparationDepartmentIds: [], teamIds: [], managerEmployeeId: "", mentorEmployeeId: "", startDate: new Date(Date.now() - new Date().getTimezoneOffset() * 60_000).toISOString().slice(0, 10), password: "" });
   }
 
   async function saveAccount(event: FormEvent<HTMLFormElement>) {
@@ -581,7 +600,7 @@ function HrPlansView({ section }: { section: "people" | "plans" }) {
         method: editingAccountId ? "PATCH" : "POST",
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify(editingAccountId
-          ? { name: accountDraft.name, email: accountDraft.email, jobTitle: accountDraft.jobTitle, departmentIds: accountDraft.departmentIds, teamIds: accountDraft.teamIds, managerEmployeeId: accountDraft.managerEmployeeId, mentorEmployeeId: accountDraft.mentorEmployeeId, isActive: accounts.find(({ id }) => id === editingAccountId)?.isActive ?? true }
+          ? { name: accountDraft.name, email: accountDraft.email, jobTitle: accountDraft.jobTitle, departmentIds: accountDraft.departmentIds, preparationDepartmentIds: accountDraft.preparationDepartmentIds, teamIds: accountDraft.teamIds, managerEmployeeId: accountDraft.managerEmployeeId, mentorEmployeeId: accountDraft.mentorEmployeeId, startDate: accountDraft.startDate, isActive: accounts.find(({ id }) => id === editingAccountId)?.isActive ?? true }
           : accountDraft),
       });
       const result = await response.json();
@@ -592,7 +611,7 @@ function HrPlansView({ section }: { section: "people" | "plans" }) {
       setAccounts(refreshedAccounts as Account[]);
       const account = (refreshedAccounts as Account[]).find(({ id }) => id === result.id);
       if (!editingAccountId && account?.isActive) setSelectedAccountId(account.id);
-      setAccountDraft({ name: "", email: "", jobTitle: "", departmentIds: [], teamIds: [], managerEmployeeId: "", mentorEmployeeId: "", password: "" });
+      setAccountDraft({ name: "", email: "", jobTitle: "", departmentIds: [], preparationDepartmentIds: [], teamIds: [], managerEmployeeId: "", mentorEmployeeId: "", startDate: new Date(Date.now() - new Date().getTimezoneOffset() * 60_000).toISOString().slice(0, 10), password: "" });
       setEditingAccountId(null);
       setShowAccountForm(false);
       setNotice(editingAccountId ? `Dados de ${account?.name ?? "pessoa"} atualizados.` : `Conta criada para ${account?.name ?? "a pessoa"}. Agora você pode montar o onboarding dessa pessoa.`);
@@ -607,7 +626,7 @@ function HrPlansView({ section }: { section: "people" | "plans" }) {
     try {
       const response = await fetch(`/api/hr/accounts/${account.id}`, {
         method: "PATCH", headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ name: account.name, email: account.email, jobTitle: account.jobTitle ?? "", departmentIds: account.departmentIds ?? (account.departmentId ? [account.departmentId] : []), teamIds: account.teamIds ?? [], managerEmployeeId: account.managerEmployeeId ?? "", mentorEmployeeId: account.mentorEmployeeId ?? "", isActive: !account.isActive }),
+        body: JSON.stringify({ name: account.name, email: account.email, jobTitle: account.jobTitle ?? "", departmentIds: account.departmentIds ?? (account.departmentId ? [account.departmentId] : []), preparationDepartmentIds: account.preparationDepartmentIds ?? [], teamIds: account.teamIds ?? [], managerEmployeeId: account.managerEmployeeId ?? "", mentorEmployeeId: account.mentorEmployeeId ?? "", startDate: account.startDate, isActive: !account.isActive }),
       });
       const result = await response.json();
       if (!response.ok) throw new Error(result.error ?? "Não foi possível alterar o status da conta.");
@@ -765,6 +784,15 @@ function HrPlansView({ section }: { section: "people" | "plans" }) {
     }));
   }
 
+  function togglePreparationDepartmentSelection(departmentId: number) {
+    setAccountDraft((current) => ({
+      ...current,
+      preparationDepartmentIds: current.preparationDepartmentIds.includes(departmentId)
+        ? current.preparationDepartmentIds.filter((id) => id !== departmentId)
+        : [...current.preparationDepartmentIds, departmentId],
+    }));
+  }
+
   function toggleTeamSelection(teamId: number) {
     setAccountDraft((current) => ({
       ...current,
@@ -801,8 +829,8 @@ function HrPlansView({ section }: { section: "people" | "plans" }) {
         method: "PUT",
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({
-          tasks: includedTasks.map(({ stageTemplateId, title, description, category, taskType, ownerRole, ownerEmployeeId, dueOffsetDays, required }) => ({
-            stageTemplateId, title, description, category, taskType, ownerRole, ownerEmployeeId, dueOffsetDays, required,
+          tasks: includedTasks.map(({ stageTemplateId, title, description, category, taskType, ownerRole, ownerEmployeeId, responsibleDepartmentId, dueOffsetDays, required }) => ({
+            stageTemplateId, title, description, category, taskType, ownerRole, ownerEmployeeId, responsibleDepartmentId, dueOffsetDays, required,
           })),
           resources: stages.map((stage) => ({
             stageTemplateId: stage.id,
@@ -906,8 +934,10 @@ function HrPlansView({ section }: { section: "people" | "plans" }) {
           <label><span className="mb-2 block text-xs font-bold text-[#55576d]">Nome completo</span><input required maxLength={160} className="w-full rounded-xl border border-[#e3e3ed] px-3 py-3 text-sm" value={accountDraft.name} onChange={(event) => setAccountDraft((current) => ({ ...current, name: event.target.value }))} /></label>
           <label><span className="mb-2 block text-xs font-bold text-[#55576d]">E-mail</span><input required type="email" maxLength={254} className="w-full rounded-xl border border-[#e3e3ed] px-3 py-3 text-sm" value={accountDraft.email} onChange={(event) => setAccountDraft((current) => ({ ...current, email: event.target.value }))} /></label>
           <label><span className="mb-2 block text-xs font-bold text-[#55576d]">Cargo</span><input maxLength={120} className="w-full rounded-xl border border-[#e3e3ed] px-3 py-3 text-sm" value={accountDraft.jobTitle} onChange={(event) => setAccountDraft((current) => ({ ...current, jobTitle: event.target.value }))} /></label>
+          <label><span className="mb-2 block text-xs font-bold text-[#55576d]">Data de entrada</span><input required type="date" className="w-full rounded-xl border border-[#e3e3ed] bg-white px-3 py-3 text-sm" value={accountDraft.startDate} onChange={(event) => setAccountDraft((current) => ({ ...current, startDate: event.target.value }))} /></label>
           <label><span className="mb-2 block text-xs font-bold text-[#55576d]">Pessoa mentora</span><select className="w-full rounded-xl border border-[#e3e3ed] bg-white px-3 py-3 text-sm" value={accountDraft.mentorEmployeeId} onChange={(event) => setAccountDraft((current) => ({ ...current, mentorEmployeeId: event.target.value }))}><option value="">Sem pessoa mentora definida</option>{accounts.filter((person) => person.isActive && person.id !== editingAccountId && person.id !== Number(accountDraft.managerEmployeeId)).map((person) => <option key={person.id} value={person.id}>{person.name}{person.jobTitle ? ` · ${person.jobTitle}` : ""}</option>)}</select></label>
           <div><label className="mb-2 block text-xs font-bold text-[#55576d]">Áreas</label>{departments.length ? <details className="group relative"><summary className="flex min-h-11 cursor-pointer list-none items-center justify-between gap-3 rounded-xl border border-[#e3e3ed] bg-white px-3 py-3 text-sm text-[#45475d] outline-none focus-visible:border-[#7778e5] [&::-webkit-details-marker]:hidden"><span className="truncate">{accountDraft.departmentIds.length ? departments.filter((department) => accountDraft.departmentIds.includes(department.id)).map((department) => department.name).join(", ") : "Selecione as áreas"}</span><span className="shrink-0 rotate-90 transition-transform group-open:-rotate-90"><Icon name="chevron" size={15} /></span></summary><div className="absolute inset-x-0 top-full z-20 mt-2 max-h-56 overflow-y-auto rounded-xl border border-[#e3e3ed] bg-white p-2 shadow-xl">{departments.map((department) => <label className="flex cursor-pointer items-center gap-2 rounded-lg px-2 py-2 text-sm text-[#45475d] hover:bg-[#f7f7fc]" key={department.id}><input className="size-4 accent-[#5b5ce2]" type="checkbox" checked={accountDraft.departmentIds.includes(department.id)} onChange={() => toggleDepartmentSelection(department.id)} />{department.name}</label>)}</div></details> : <button className="text-xs font-bold text-[#5556d8]" onClick={() => { setPeopleView("areas"); setShowAccountForm(false); }} type="button">Crie uma área primeiro</button>}</div>
+          <div><label className="mb-2 block text-xs font-bold text-[#55576d]">Permissões de preparação</label>{departments.length ? <details className="group relative"><summary className="flex min-h-11 cursor-pointer list-none items-center justify-between gap-3 rounded-xl border border-[#e3e3ed] bg-white px-3 py-3 text-sm text-[#45475d] outline-none focus-visible:border-[#7778e5] [&::-webkit-details-marker]:hidden"><span className="truncate">{accountDraft.preparationDepartmentIds.length ? departments.filter((department) => accountDraft.preparationDepartmentIds.includes(department.id)).map((department) => department.name).join(", ") : "Sem acesso de preparação delegado"}</span><span className="shrink-0 rotate-90 transition-transform group-open:-rotate-90"><Icon name="chevron" size={15} /></span></summary><div className="absolute inset-x-0 top-full z-30 mt-2 max-h-56 overflow-y-auto rounded-xl border border-[#e3e3ed] bg-white p-2 shadow-xl">{departments.map((department) => <label className="flex cursor-pointer items-center gap-2 rounded-lg px-2 py-2 text-sm text-[#45475d] hover:bg-[#f7f7fc]" key={department.id}><input className="size-4 accent-[#5b5ce2]" type="checkbox" checked={accountDraft.preparationDepartmentIds.includes(department.id)} onChange={() => togglePreparationDepartmentSelection(department.id)} />{department.name}</label>)}</div></details> : <span className="text-xs text-[#85879a]">Cadastre uma área para delegar permissões.</span>}</div>
           <div><label className="mb-2 block text-xs font-bold text-[#55576d]">Equipes</label>{teams.length ? <details className="group relative"><summary className="flex min-h-11 cursor-pointer list-none items-center justify-between gap-3 rounded-xl border border-[#e3e3ed] bg-white px-3 py-3 text-sm text-[#45475d] outline-none focus-visible:border-[#7778e5] [&::-webkit-details-marker]:hidden"><span className="truncate">{accountDraft.teamIds.length ? `${accountDraft.teamIds.length} ${accountDraft.teamIds.length === 1 ? "equipe selecionada" : "equipes selecionadas"}` : "Selecione as equipes"}</span><span className="shrink-0 rotate-90 transition-transform group-open:-rotate-90"><Icon name="chevron" size={15} /></span></summary><div className="absolute inset-x-0 top-full z-20 mt-2 overflow-hidden rounded-xl border border-[#e3e3ed] bg-white shadow-xl"><label className="relative block border-b border-[#eeeeF4] p-2"><span className="absolute left-5 top-1/2 -translate-y-1/2 text-[#9698aa]"><Icon name="search" size={15} /></span><input aria-label="Buscar equipe" className="w-full rounded-lg bg-[#f7f7fb] py-2 pl-9 pr-3 text-xs outline-none focus:ring-2 focus:ring-[#e5e4fa]" placeholder="Buscar equipe" type="search" value={teamSearch} onKeyDown={(event) => { if (event.key === "Enter") event.preventDefault(); }} onChange={(event) => setTeamSearch(event.target.value)} /></label><div className="max-h-56 overflow-y-auto p-2">{visibleTeamRows.length ? visibleTeamRows.map(({ team, depth }) => <label className="flex cursor-pointer items-center gap-2 rounded-lg px-2 py-2 text-sm text-[#45475d] hover:bg-[#f7f7fc]" key={team.id}><input className="size-4 accent-[#5b5ce2]" type="checkbox" checked={accountDraft.teamIds.includes(team.id)} onChange={() => toggleTeamSelection(team.id)} /><span>{`${"　".repeat(depth)}${depth ? "↳ " : ""}${team.name}`}</span></label>) : <p className="px-2 py-3 text-xs text-[#85879a]">Nenhuma equipe encontrada.</p>}</div></div></details> : <button className="text-xs font-bold text-[#5556d8]" onClick={() => { setPeopleView("teams"); setShowAccountForm(false); }} type="button">Crie uma equipe primeiro</button>}</div>
           {!editingAccountId && <><label><span className="mb-2 block text-xs font-bold text-[#55576d]">Senha inicial</span><input required minLength={8} type="password" autoComplete="new-password" className="w-full rounded-xl border border-[#e3e3ed] px-3 py-3 text-sm" value={accountDraft.password} onChange={(event) => setAccountDraft((current) => ({ ...current, password: event.target.value }))} /><small className="mt-1 block text-[10px] text-[#85879a]">Mínimo de 8 caracteres.</small></label><div className="flex items-end justify-end"><button className="button-primary h-12 px-5" disabled={creatingAccount} type="submit">{creatingAccount ? "Salvando..." : "Criar usuário"}</button></div></>}
         </div>
@@ -944,12 +974,14 @@ function HrPlansView({ section }: { section: "people" | "plans" }) {
                 <label><span className="mb-1.5 block text-xs font-bold text-[#55576d]">Etapa</span><select required className="w-full rounded-lg border border-[#e3e3ed] bg-white px-3 py-2.5 text-sm" value={presetTaskDraft.stageTemplateId} onChange={(event) => setPresetTaskDraft((current) => ({ ...current, stageTemplateId: event.target.value }))}>{stages.map((stage) => <option key={stage.id} value={stage.id}>{stage.name}</option>)}</select></label>
                 <label><span className="mb-1.5 block text-xs font-bold text-[#55576d]">Título da tarefa</span><input maxLength={180} className="w-full rounded-lg border border-[#e3e3ed] px-3 py-2.5 text-sm" placeholder="Ex.: Criar conta de desenvolvimento" value={presetTaskDraft.title} onChange={(event) => setPresetTaskDraft((current) => ({ ...current, title: event.target.value }))} /></label>
                 <label className="md:col-span-2"><span className="mb-1.5 block text-xs font-bold text-[#55576d]">O que a pessoa deve fazer?</span><textarea maxLength={1000} className="min-h-20 w-full rounded-lg border border-[#e3e3ed] px-3 py-2.5 text-sm" placeholder="Descreva o que precisa acontecer e como saber que foi concluído." value={presetTaskDraft.description} onChange={(event) => setPresetTaskDraft((current) => ({ ...current, description: event.target.value }))} /></label>
-                <label><span className="mb-1.5 block text-xs font-bold text-[#55576d]">Tipo / categoria</span><select className="w-full rounded-lg border border-[#e3e3ed] bg-white px-3 py-2.5 text-sm" value={presetTaskDraft.taskType} onChange={(event) => setPresetTaskDraft((current) => ({ ...current, taskType: event.target.value as PlanTask["taskType"] }))}>{Object.entries(taskTypeLabels).map(([value, label]) => <option key={value} value={value}>{label}</option>)}</select></label>
+                <label><span className="mb-1.5 block text-xs font-bold text-[#55576d]">Tipo de atividade</span><select className="w-full rounded-lg border border-[#e3e3ed] bg-white px-3 py-2.5 text-sm" value={presetTaskDraft.taskType} onChange={(event) => setPresetTaskDraft((current) => ({ ...current, taskType: event.target.value as PlanTask["taskType"] }))}>{Object.entries(taskTypeLabels).map(([value, label]) => <option key={value} value={value}>{label}</option>)}</select></label>
+                <label><span className="mb-1.5 block text-xs font-bold text-[#55576d]">Categoria da preparação</span><select className="w-full rounded-lg border border-[#e3e3ed] bg-white px-3 py-2.5 text-sm" value={presetTaskDraft.category} onChange={(event) => setPresetTaskDraft((current) => ({ ...current, category: event.target.value }))}>{preparationCategories.map((category) => <option key={category} value={category}>{category}</option>)}</select></label>
                 <div className="relative"><label className="mb-1.5 block text-xs font-bold text-[#55576d]" htmlFor="preset-responsible-search">Pessoa responsável</label><input id="preset-responsible-search" className="w-full rounded-lg border border-[#e3e3ed] bg-white px-3 py-2.5 text-sm" placeholder="Buscar pelo nome" value={presetResponsibleSearch} onChange={(event) => { setPresetResponsibleSearch(event.target.value); setPresetTaskDraft((current) => ({ ...current, ownerEmployeeId: "" })); }} />
                   {presetTaskDraft.ownerEmployeeId && (() => { const person = responsiblePeople.find(({ id }) => id === Number(presetTaskDraft.ownerEmployeeId)); return person ? <div className="mt-2 flex items-center justify-between gap-3 rounded-lg border border-[#c9c8ed] bg-[#f7f6ff] px-3 py-2"><div className="min-w-0"><strong className="block truncate text-xs text-[#303249]">{person.name}</strong><small className="block truncate text-[10px] text-[#777a91]">{person.jobTitle ?? "Cargo não informado"} · {person.department ?? "Sem área"}</small></div><button className="shrink-0 text-[10px] font-bold text-[#5556d8]" onClick={() => setPresetTaskDraft((current) => ({ ...current, ownerEmployeeId: "" }))} type="button">Trocar</button></div> : null; })()}
-                  {!presetTaskDraft.ownerEmployeeId && presetResponsibleSearch.trim() && <div className="absolute inset-x-0 top-full z-10 mt-1 space-y-1 rounded-xl border border-[#e5e5ef] bg-white p-2 shadow-lg">{responsibleMatches(presetResponsibleSearch).length ? responsibleMatches(presetResponsibleSearch).map((person) => <button className="w-full rounded-lg border border-transparent px-3 py-2 text-left hover:border-[#e5e4fa] hover:bg-[#f8f7ff]" key={person.id} onClick={() => { setPresetTaskDraft((current) => ({ ...current, ownerEmployeeId: String(person.id) })); setPresetResponsibleSearch(""); }} type="button"><strong className="block truncate text-xs text-[#303249]">{person.name}</strong><small className="mt-0.5 block truncate text-[10px] text-[#777a91]">{person.jobTitle ?? "Cargo não informado"} · {person.department ?? "Sem área"}</small></button>) : <p className="px-3 py-2 text-xs text-[#85879a]">Nenhuma pessoa encontrada.</p>}</div>}
+                  {!presetTaskDraft.ownerEmployeeId && presetResponsibleSearch.trim() && <div className="absolute inset-x-0 top-full z-10 mt-1 space-y-1 rounded-xl border border-[#e5e5ef] bg-white p-2 shadow-lg">{responsibleMatches(presetResponsibleSearch).length ? responsibleMatches(presetResponsibleSearch).map((person) => <button className="w-full rounded-lg border border-transparent px-3 py-2 text-left hover:border-[#e5e4fa] hover:bg-[#f8f7ff]" key={person.id} onClick={() => { setPresetTaskDraft((current) => ({ ...current, ownerEmployeeId: String(person.id), responsibleDepartmentId: current.responsibleDepartmentId || String(person.departmentId ?? "") })); setPresetResponsibleSearch(""); }} type="button"><strong className="block truncate text-xs text-[#303249]">{person.name}</strong><small className="mt-0.5 block truncate text-[10px] text-[#777a91]">{person.jobTitle ?? "Cargo não informado"} · {person.department ?? "Sem área"}</small></button>) : <p className="px-3 py-2 text-xs text-[#85879a]">Nenhuma pessoa encontrada.</p>}</div>}
                 </div>
-                <label><span className="mb-1.5 block text-xs font-bold text-[#55576d]">Prazo após início (dias)</span><input min={0} max={32767} type="number" className="w-full rounded-lg border border-[#e3e3ed] bg-white px-3 py-2.5 text-sm" value={presetTaskDraft.dueOffsetDays} onChange={(event) => setPresetTaskDraft((current) => ({ ...current, dueOffsetDays: event.target.value }))} /></label>
+                <label><span className="mb-1.5 block text-xs font-bold text-[#55576d]">Área responsável</span><select className="w-full rounded-lg border border-[#e3e3ed] bg-white px-3 py-2.5 text-sm" value={presetTaskDraft.responsibleDepartmentId} onChange={(event) => setPresetTaskDraft((current) => ({ ...current, responsibleDepartmentId: event.target.value }))}><option value="">Usar a área da pessoa responsável</option>{departments.map((department) => <option key={department.id} value={department.id}>{department.name}</option>)}</select></label>
+                <label><span className="mb-1.5 block text-xs font-bold text-[#55576d]">Prazo relativo à entrada (dias)</span><input min={-32768} max={32767} type="number" className="w-full rounded-lg border border-[#e3e3ed] bg-white px-3 py-2.5 text-sm" value={presetTaskDraft.dueOffsetDays} onChange={(event) => setPresetTaskDraft((current) => ({ ...current, dueOffsetDays: event.target.value }))} /><small className="mt-1 block text-[10px] text-[#85879a]">Use valor negativo para um prazo antes da entrada.</small></label>
                 <label className="flex items-center gap-2 text-sm font-semibold text-[#55576d]"><input className="size-4 accent-[#5b5ce2]" type="checkbox" checked={presetTaskDraft.required} onChange={(event) => setPresetTaskDraft((current) => ({ ...current, required: event.target.checked }))} />Obrigatória por padrão</label>
               </div>
               <div className="mt-3 flex justify-end"><button className="rounded-lg border border-[#dedeea] px-4 py-2.5 text-sm font-bold text-[#5556d8]" onClick={addPresetTask} type="button">Adicionar tarefa ao pacote</button></div>
@@ -987,7 +1019,7 @@ function HrPlansView({ section }: { section: "people" | "plans" }) {
                 {stageTasks.map((task) => (
                   <article className={`flex flex-wrap items-start gap-3 rounded-xl border p-4 transition ${excludedTaskIds.includes(task.id) ? "border-[#ededf3] bg-[#fafafe] opacity-60" : "border-[#ededf3] bg-white"}`} key={task.id}>
                     <span className="grid size-9 shrink-0 place-items-center rounded-xl bg-[#f1f0ff] text-[#5b5ce2]"><Icon name={task.taskType === "training" ? "book" : task.taskType === "checkin" ? "calendar" : "check"} size={17} /></span>
-                    <div className="min-w-0 flex-1"><div className="flex flex-wrap items-center gap-2"><h3 className="font-extrabold text-[#303249]">{task.title}</h3><span className="rounded-full bg-[#f5f5f9] px-2 py-1 text-[10px] font-bold text-[#777a91]">{task.category}</span><span className={`rounded-full px-2 py-1 text-[10px] font-bold ${task.required ? "bg-[#fff1dc] text-[#a9681c]" : "bg-[#f1f1f5] text-[#777a91]"}`}>{task.required ? "Obrigatória" : "Opcional"}</span>{excludedTaskIds.includes(task.id) && <span className="rounded-full bg-red-50 px-2 py-1 text-[10px] font-bold text-red-700">Fora da jornada</span>}</div><p className="mt-1 text-xs leading-5 text-[#85879a]">{task.description || "Sem descrição."}</p><p className="mt-2 text-[10px] font-bold text-[#777a91]">Pessoa responsável: {task.ownerEmployeeId ? task.ownerName ?? task.ownerRole : "Responsável não definido — edite para escolher uma pessoa"} · Prazo: {task.dueOffsetDays} {task.dueOffsetDays === 1 ? "dia" : "dias"} após o início</p></div>
+                    <div className="min-w-0 flex-1"><div className="flex flex-wrap items-center gap-2"><h3 className="font-extrabold text-[#303249]">{task.title}</h3><span className="rounded-full bg-[#f5f5f9] px-2 py-1 text-[10px] font-bold text-[#777a91]">{task.category}</span><span className={`rounded-full px-2 py-1 text-[10px] font-bold ${task.required ? "bg-[#fff1dc] text-[#a9681c]" : "bg-[#f1f1f5] text-[#777a91]"}`}>{task.required ? "Obrigatória" : "Opcional"}</span>{excludedTaskIds.includes(task.id) && <span className="rounded-full bg-red-50 px-2 py-1 text-[10px] font-bold text-red-700">Fora da jornada</span>}</div><p className="mt-1 text-xs leading-5 text-[#85879a]">{task.description || "Sem descrição."}</p><p className="mt-2 text-[10px] font-bold text-[#777a91]">Pessoa responsável: {task.ownerEmployeeId ? task.ownerName ?? task.ownerRole : "Responsável não definido — edite para escolher uma pessoa"} · Prazo: {formatDueOffset(task.dueOffsetDays)}</p></div>
                     <div className="flex flex-wrap items-center gap-2"><label className="flex items-center gap-1.5 text-xs font-bold text-[#55576d]"><input className="size-4 accent-[#5b5ce2]" type="checkbox" checked={!excludedTaskIds.includes(task.id)} onChange={(event) => setExcludedTaskIds((current) => event.target.checked ? current.filter((id) => id !== task.id) : [...current, task.id])} />Incluir</label><button aria-label={`Editar ${task.title}`} className="rounded-lg border border-[#e6e6ef] px-3 py-2 text-xs font-bold text-[#5b5ce2] hover:bg-[#f6f5ff]" onClick={() => editTask(task)} type="button">Editar</button><button aria-label={`Remover ${task.title}`} className="rounded-lg border border-[#f1dada] px-3 py-2 text-xs font-bold text-[#b84f4f] hover:bg-red-50" onClick={() => removeTask(task.id)} type="button">Remover</button></div>
                   </article>
                 ))}
@@ -1038,12 +1070,14 @@ function HrPlansView({ section }: { section: "people" | "plans" }) {
                 <label className="block"><span className="mb-1.5 block text-xs font-bold text-[#55576d]">O que a pessoa precisa fazer?</span><input required maxLength={180} className="w-full rounded-xl border border-[#e3e3ed] px-4 py-3 text-sm outline-none focus:border-[#7778e5]" value={draft.title} onChange={(event) => setDraft((current) => ({ ...current, title: event.target.value }))} placeholder="Ex.: Criar contas da empresa" /></label>
                 <label className="block"><span className="mb-1.5 block text-xs font-bold text-[#55576d]">Instruções</span><textarea maxLength={1000} className="min-h-24 w-full rounded-xl border border-[#e3e3ed] px-4 py-3 text-sm outline-none focus:border-[#7778e5]" value={draft.description} onChange={(event) => setDraft((current) => ({ ...current, description: event.target.value }))} placeholder="Explique os passos e como confirmar que terminou." /></label>
                 <div className="grid gap-3 sm:grid-cols-2">
-                  <label><span className="mb-1.5 block text-xs font-bold text-[#55576d]">Tipo / categoria</span><select className="w-full rounded-lg border border-[#e3e3ed] bg-white px-3 py-2.5 text-sm" value={draft.taskType} onChange={(event) => setDraft((current) => ({ ...current, taskType: event.target.value as PlanTask["taskType"] }))}>{Object.entries(taskTypeLabels).map(([value, label]) => <option key={value} value={value}>{label}</option>)}</select></label>
+                  <label><span className="mb-1.5 block text-xs font-bold text-[#55576d]">Tipo de atividade</span><select className="w-full rounded-lg border border-[#e3e3ed] bg-white px-3 py-2.5 text-sm" value={draft.taskType} onChange={(event) => setDraft((current) => ({ ...current, taskType: event.target.value as PlanTask["taskType"] }))}>{Object.entries(taskTypeLabels).map(([value, label]) => <option key={value} value={value}>{label}</option>)}</select></label>
+                  <label><span className="mb-1.5 block text-xs font-bold text-[#55576d]">Categoria da preparação</span><select className="w-full rounded-lg border border-[#e3e3ed] bg-white px-3 py-2.5 text-sm" value={draft.category} onChange={(event) => setDraft((current) => ({ ...current, category: event.target.value }))}>{preparationCategories.map((category) => <option key={category} value={category}>{category}</option>)}</select></label>
+                  <label><span className="mb-1.5 block text-xs font-bold text-[#55576d]">Área responsável</span><select className="w-full rounded-lg border border-[#e3e3ed] bg-white px-3 py-2.5 text-sm" value={draft.responsibleDepartmentId} onChange={(event) => setDraft((current) => ({ ...current, responsibleDepartmentId: event.target.value }))}><option value="">Usar a área da pessoa responsável</option>{departments.map((department) => <option key={department.id} value={department.id}>{department.name}</option>)}</select></label>
                   <div className="relative"><label className="mb-1.5 block text-xs font-bold text-[#55576d]" htmlFor="task-responsible-search">Pessoa responsável</label><input id="task-responsible-search" className="w-full rounded-lg border border-[#e3e3ed] bg-white px-3 py-2.5 text-sm" placeholder="Buscar pelo nome" value={taskResponsibleSearch} onChange={(event) => { setTaskResponsibleSearch(event.target.value); setDraft((current) => ({ ...current, ownerEmployeeId: "" })); }} />
                     {draft.ownerEmployeeId && (() => { const person = responsiblePeople.find(({ id }) => id === Number(draft.ownerEmployeeId)); return person ? <div className="mt-2 flex items-center justify-between gap-3 rounded-lg border border-[#c9c8ed] bg-[#f7f6ff] px-3 py-2"><div className="min-w-0"><strong className="block truncate text-xs text-[#303249]">{person.name}</strong><small className="block truncate text-[10px] text-[#777a91]">{person.jobTitle ?? "Cargo não informado"} · {person.department ?? "Sem área"}</small></div><button className="shrink-0 text-[10px] font-bold text-[#5556d8]" onClick={() => setDraft((current) => ({ ...current, ownerEmployeeId: "" }))} type="button">Trocar</button></div> : null; })()}
-                    {!draft.ownerEmployeeId && taskResponsibleSearch.trim() && <div className="absolute inset-x-0 top-full z-10 mt-1 space-y-1 rounded-xl border border-[#e5e5ef] bg-white p-2 shadow-lg">{responsibleMatches(taskResponsibleSearch).length ? responsibleMatches(taskResponsibleSearch).map((person) => <button className="w-full rounded-lg border border-transparent px-3 py-2 text-left hover:border-[#e5e4fa] hover:bg-[#f8f7ff]" key={person.id} onClick={() => { setDraft((current) => ({ ...current, ownerEmployeeId: String(person.id) })); setTaskResponsibleSearch(""); }} type="button"><strong className="block truncate text-xs text-[#303249]">{person.name}</strong><small className="mt-0.5 block truncate text-[10px] text-[#777a91]">{person.jobTitle ?? "Cargo não informado"} · {person.department ?? "Sem área"}</small></button>) : <p className="px-3 py-2 text-xs text-[#85879a]">Nenhuma pessoa encontrada.</p>}</div>}
+                    {!draft.ownerEmployeeId && taskResponsibleSearch.trim() && <div className="absolute inset-x-0 top-full z-10 mt-1 space-y-1 rounded-xl border border-[#e5e5ef] bg-white p-2 shadow-lg">{responsibleMatches(taskResponsibleSearch).length ? responsibleMatches(taskResponsibleSearch).map((person) => <button className="w-full rounded-lg border border-transparent px-3 py-2 text-left hover:border-[#e5e4fa] hover:bg-[#f8f7ff]" key={person.id} onClick={() => { setDraft((current) => ({ ...current, ownerEmployeeId: String(person.id), responsibleDepartmentId: current.responsibleDepartmentId || String(person.departmentId ?? "") })); setTaskResponsibleSearch(""); }} type="button"><strong className="block truncate text-xs text-[#303249]">{person.name}</strong><small className="mt-0.5 block truncate text-[10px] text-[#777a91]">{person.jobTitle ?? "Cargo não informado"} · {person.department ?? "Sem área"}</small></button>) : <p className="px-3 py-2 text-xs text-[#85879a]">Nenhuma pessoa encontrada.</p>}</div>}
                   </div>
-                  <label><span className="mb-1.5 block text-xs font-bold text-[#55576d]">Prazo em dias após o início</span><input min={0} max={32767} type="number" className="w-full rounded-lg border border-[#e3e3ed] px-3 py-2.5 text-sm" value={draft.dueOffsetDays} onChange={(event) => setDraft((current) => ({ ...current, dueOffsetDays: event.target.value }))} /></label>
+                  <label><span className="mb-1.5 block text-xs font-bold text-[#55576d]">Prazo relativo à entrada (dias)</span><input min={-32768} max={32767} type="number" className="w-full rounded-lg border border-[#e3e3ed] px-3 py-2.5 text-sm" value={draft.dueOffsetDays} onChange={(event) => setDraft((current) => ({ ...current, dueOffsetDays: event.target.value }))} /><small className="mt-1 block text-[10px] text-[#85879a]">Valor negativo: prazo antes da entrada.</small></label>
                   <label className="flex items-center gap-2 text-sm font-semibold text-[#55576d]"><input className="size-4 accent-[#5b5ce2]" type="checkbox" checked={draft.required} onChange={(event) => setDraft((current) => ({ ...current, required: event.target.checked }))} /><span>Obrigatória <small className="block text-xs font-normal text-[#85879a]">Desmarque se for opcional.</small></span></label>
                 </div>
               </div>
@@ -1053,7 +1087,7 @@ function HrPlansView({ section }: { section: "people" | "plans" }) {
                   <div className="flex items-start gap-3"><span className="grid size-9 shrink-0 place-items-center rounded-xl bg-[#f1f0ff] text-[#5b5ce2]"><Icon name={draft.taskType === "training" ? "book" : draft.taskType === "checkin" ? "calendar" : "check"} size={17} /></span><div className="min-w-0 flex-1"><div className="flex flex-wrap items-center gap-2"><h3 className="font-extrabold text-[#303249]">{draft.title || "Título da tarefa"}</h3><span className="rounded-full bg-[#f5f5f9] px-2 py-1 text-[10px] font-bold text-[#777a91]">{taskTypeLabels[draft.taskType]}</span></div><p className="mt-2 text-sm leading-5 text-[#777a91]">{draft.description || "As instruções para a pessoa aparecerão aqui."}</p></div></div>
                   <div className="mt-4 flex flex-wrap items-center justify-between gap-2 border-t border-[#eeeeF4] pt-3"><span className="text-xs text-[#777a91]">Pessoa responsável: <strong className="text-[#45475d]">{accounts.find(({ id }) => id === Number(draft.ownerEmployeeId))?.name ?? "Selecione uma pessoa"}</strong></span><span className={`rounded-full px-2 py-1 text-[10px] font-bold ${draft.required ? "bg-[#fff1dc] text-[#a9681c]" : "bg-[#f1f1f5] text-[#777a91]"}`}>{draft.required ? "Obrigatória" : "Opcional"}</span></div>
                 </article>
-                <p className="mt-3 text-[11px] leading-5 text-[#85879a]">Prazo: {draft.dueOffsetDays || "0"} {Number(draft.dueOffsetDays) === 1 ? "dia" : "dias"} após o início</p>
+                <p className="mt-3 text-[11px] leading-5 text-[#85879a]">Prazo: {formatDueOffset(Number(draft.dueOffsetDays) || 0)}</p>
               </aside>
             </div>
             <div className="flex flex-wrap justify-end gap-2 border-t border-[#eeeeF4] pt-4"><button className="rounded-xl border border-[#e3e3ed] px-4 py-3 text-sm font-bold text-[#777a91]" onClick={() => resetDraft()} type="button">Limpar</button><button className="button-primary h-12 px-5" type="submit">{editingTaskId === null ? "Adicionar à etapa" : "Salvar alterações"}</button></div>

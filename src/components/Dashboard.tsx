@@ -11,6 +11,7 @@ import MessagesView from "../views/MessagesView";
 import OverdueTasksView from "../views/OverdueTasksView";
 import SupportRequestView from "../views/SupportRequestView";
 import OnboardingSupportView from "../views/OnboardingSupportView";
+import PreparationView from "../views/PreparationView";
 import EmployeeAvatar from "./EmployeeAvatar";
 import type { AuthenticatedEmployee } from "./Login";
 
@@ -29,6 +30,7 @@ function Dashboard({ employee, onLogout }: { employee: AuthenticatedEmployee; on
   const [overdueTaskCount, setOverdueTaskCount] = useState(0);
   const [preEntryOverdueCount, setPreEntryOverdueCount] = useState(0);
   const [hrOverdueTaskCount, setHrOverdueTaskCount] = useState(0);
+  const [canManagePreparations, setCanManagePreparations] = useState(employee.isHrAdmin);
   const updateOverdueCount = useCallback((count: number, preEntryCount: number) => {
     setOverdueTaskCount(count);
     setPreEntryOverdueCount(preEntryCount);
@@ -88,6 +90,17 @@ function Dashboard({ employee, onLogout }: { employee: AuthenticatedEmployee; on
       window.clearInterval(interval);
       window.removeEventListener("focus", refreshOverdueCount);
     };
+  }, [employee.id, employee.isHrAdmin]);
+
+  useEffect(() => {
+    if (employee.isHrAdmin) { setCanManagePreparations(true); return; }
+    let active = true;
+    fetch("/api/preparation/access").then(async (response) => {
+      const result = await response.json();
+      if (!response.ok) throw new Error(result.error ?? "Could not load preparation access.");
+      return result as { canManage: boolean };
+    }).then((result) => { if (active) setCanManagePreparations(result.canManage); }).catch(() => { if (active) setCanManagePreparations(false); });
+    return () => { active = false; };
   }, [employee.id, employee.isHrAdmin]);
 
   useEffect(() => {
@@ -225,7 +238,7 @@ function Dashboard({ employee, onLogout }: { employee: AuthenticatedEmployee; on
       .catch(() => setSearchPeopleRequested(false));
   }
   const navItems: { label: string; icon: IconName }[] = employee.isHrAdmin
-    ? [{ label: "Pessoas da empresa", icon: "people" }, { label: "Jornadas", icon: "calendar" }, { label: "Acompanhamento", icon: "chat" }, { label: "Tarefas atrasadas", icon: "clock" }, { label: "Mensagens de suporte", icon: "chat" }]
+    ? [{ label: "Pessoas da empresa", icon: "people" }, { label: "Jornadas", icon: "calendar" }, { label: "Novas admissões", icon: "tools" }, { label: "Acompanhamento", icon: "chat" }, { label: "Tarefas atrasadas", icon: "clock" }, { label: "Mensagens de suporte", icon: "chat" }]
     : [
         { label: "Início", icon: "home" },
         { label: "Minha jornada", icon: "calendar" },
@@ -234,6 +247,7 @@ function Dashboard({ employee, onLogout }: { employee: AuthenticatedEmployee; on
         { label: "Pedir suporte", icon: "help" },
         { label: "Mensagens de suporte", icon: "chat" },
       ];
+  if (!employee.isHrAdmin && canManagePreparations) navItems.splice(2, 0, { label: "Novas admissões", icon: "tools" });
 
   return (
     <main className="min-h-screen bg-[#f7f7fb] text-[#20223a]">
@@ -303,6 +317,8 @@ function Dashboard({ employee, onLogout }: { employee: AuthenticatedEmployee; on
             <OverdueTasksView />
           ) : employee.isHrAdmin && activeNav === "Acompanhamento" ? (
             <OnboardingSupportView onOpenChat={openSupportRequestChat} />
+          ) : activeNav === "Novas admissões" && canManagePreparations ? (
+            <PreparationView />
           ) : !employee.isHrAdmin && activeNav === "Pedir suporte" ? (
             <SupportRequestView onOpenChat={openSupportRequestChat} />
           ) : employee.isHrAdmin ? (

@@ -16,7 +16,6 @@ const listenHost = process.env.HOST ?? (process.env.PORT ? "0.0.0.0" : "127.0.0.
 const maximumResourceFileSize = 25 * 1024 * 1024;
 const maximumProfilePhotoSize = 2 * 1024 * 1024;
 const profilePhotoMimeTypes = ["image/jpeg", "image/png", "image/webp"];
-const taskCategoryLabels = { task: "Tarefa", preparation: "Preparação", training: "Treinamento", checkin: "Check-in" };
 
 app.disable("x-powered-by");
 app.use(express.json());
@@ -91,19 +90,27 @@ app.get("/api/me/plan", requireAuthenticated, async (request, response) => {
         SELECT plan_task.employee_plan_task_id AS id, stage.stage_code AS "stageCode", plan_task.title, plan_task.description,
           plan_task.category, plan_task.task_type AS "taskType", plan_task.owner_role AS "ownerRole",
           plan_task.owner_employee_id AS "ownerEmployeeId", task_owner.full_name AS "ownerName",
+          plan_task.responsible_department_id AS "responsibleDepartmentId",
           plan_task.due_offset_days AS "dueOffsetDays", plan_task.is_required AS required,
+          plan_task.shipping_carrier AS carrier, plan_task.shipping_tracking_code AS "trackingCode",
+          plan_task.shipping_tracking_url AS "trackingUrl",
           COALESCE(progress.is_completed, FALSE) AS completed,
+          CASE WHEN progress.is_completed THEN 'ready' ELSE COALESCE(progress.status, 'not_started') END AS status,
           (COALESCE(onboarding.start_date, employee.created_at::date) + plan_task.due_offset_days) AS "dueDate",
           (COALESCE(progress.is_completed, FALSE) IS FALSE
             AND COALESCE(onboarding.start_date, employee.created_at::date) + plan_task.due_offset_days < CURRENT_DATE) AS overdue,
-          COALESCE((SELECT json_agg(json_build_object('id', issue.employee_plan_task_issue_id, 'description', issue.description, 'createdAt', issue.created_at) ORDER BY issue.created_at DESC)
+          COALESCE((SELECT json_agg(json_build_object('id', entry.id, 'actorName', entry.actor_name,
+            'action', entry.action, 'newValue', entry.new_value, 'createdAt', entry.created_at) ORDER BY entry.created_at DESC)
+            FROM (SELECT history.employee_plan_task_history_id AS id, actor.full_name AS actor_name,
+              history.action, history.new_value, history.created_at FROM public.employee_plan_task_history AS history
+              INNER JOIN public.employees AS actor ON actor.employee_id = history.actor_employee_id
+              WHERE history.employee_plan_task_id = plan_task.employee_plan_task_id
+              ORDER BY history.created_at DESC LIMIT 5) AS entry), '[]'::json) AS history,
+          COALESCE((SELECT json_agg(json_build_object('id', issue.employee_plan_task_issue_id, 'description', issue.description, 'status', issue.status, 'resolutionNote', issue.resolution_note, 'createdAt', issue.created_at) ORDER BY issue.created_at DESC)
             FROM public.employee_plan_task_issues AS issue
             WHERE issue.employee_plan_task_id = plan_task.employee_plan_task_id AND issue.employee_id = $1
-              AND EXISTS (
-                SELECT 1 FROM public.employee_plan_task_issue_conversations AS conversation
-                WHERE conversation.employee_plan_task_issue_id = issue.employee_plan_task_issue_id
-                  AND conversation.last_message_at >= CURRENT_TIMESTAMP - INTERVAL '2 months'
-              )), '[]'::json) AS issues
+              AND (issue.status <> 'resolved' OR issue.resolved_at >= CURRENT_TIMESTAMP - INTERVAL '2 months')),
+            '[]'::json) AS issues
         FROM public.employee_plan_tasks AS plan_task
         INNER JOIN public.stage_templates AS stage ON stage.stage_template_id = plan_task.stage_template_id
         INNER JOIN public.employees AS employee ON employee.employee_id = plan_task.employee_id
@@ -179,11 +186,14 @@ app.patch("/api/me/plan/tasks/:taskId", requireAuthenticated, async (request, re
     const task = await pool.query("SELECT 1 FROM public.employee_plan_tasks WHERE employee_plan_task_id = $1 AND employee_id = $2", [taskId, employeeId]);
     if (!task.rowCount) return response.status(404).json({ error: "Tarefa não encontrada na sua jornada." });
     await pool.query(`
-      INSERT INTO public.employee_plan_task_progress (employee_plan_task_id, employee_id, is_completed, completed_at, updated_at)
-      VALUES ($1, $2, $3, CASE WHEN $3 THEN CURRENT_TIMESTAMP ELSE NULL END, CURRENT_TIMESTAMP)
+      INSERT INTO public.employee_plan_task_progress (employee_plan_task_id, employee_id, is_completed, status, completed_at, updated_by_employee_id, updated_at)
+      VALUES ($1, $2, $3, CASE WHEN $3 THEN 'ready' ELSE 'not_started' END, CASE WHEN $3 THEN CURRENT_TIMESTAMP ELSE NULL END, $2, CURRENT_TIMESTAMP)
       ON CONFLICT (employee_plan_task_id) DO UPDATE
-      SET is_completed = EXCLUDED.is_completed, completed_at = EXCLUDED.completed_at, updated_at = CURRENT_TIMESTAMP
+      SET is_completed = EXCLUDED.is_completed, status = EXCLUDED.status,
+        completed_at = EXCLUDED.completed_at, updated_by_employee_id = EXCLUDED.updated_by_employee_id, updated_at = CURRENT_TIMESTAMP
     `, [taskId, employeeId, completed]);
+    await pool.query(`INSERT INTO public.employee_plan_task_history (employee_plan_task_id, actor_employee_id, action, new_value)
+      VALUES ($1, $2, 'employee_confirmation', $3)`, [taskId, employeeId, completed ? "ready" : "not_started"]);
     return response.json({ id: taskId, completed });
   } catch (error) {
     console.error("Could not save employee task progress:", error.message);
@@ -207,7 +217,7 @@ app.post("/api/me/plan/tasks/:taskId/issues", requireAuthenticated, async (reque
     const result = await client.query(`
       INSERT INTO public.employee_plan_task_issues (employee_plan_task_id, employee_id, description)
       VALUES ($1, $2, $3)
-      RETURNING employee_plan_task_issue_id AS id, description, created_at AS "createdAt"
+      RETURNING employee_plan_task_issue_id AS id, description, status, resolution_note AS "resolutionNote", created_at AS "createdAt"
     `, [taskId, employeeId, description]);
     const conversation = await client.query(`
       INSERT INTO public.employee_plan_task_issue_conversations (employee_plan_task_issue_id)
@@ -219,6 +229,8 @@ app.post("/api/me/plan/tasks/:taskId/issues", requireAuthenticated, async (reque
         (employee_plan_task_issue_conversation_id, sender_employee_id, body, sent_at)
       VALUES ($1, $2, $3, $4)
     `, [conversation.rows[0].id, employeeId, description, result.rows[0].createdAt]);
+    await client.query(`INSERT INTO public.employee_plan_task_history (employee_plan_task_id, actor_employee_id, action, new_value)
+      VALUES ($1, $2, 'issue_reported', $3)`, [taskId, employeeId, description]);
     await client.query("COMMIT");
     return response.status(201).json({ ...result.rows[0], conversationId: conversation.rows[0].id });
   } catch (error) {
@@ -435,10 +447,12 @@ app.post("/api/me/plan/tasks/:taskId/check-in", requireAuthenticated, async (req
         needs_support AS "needsSupport", follow_up_status AS "followUpStatus", submitted_at AS "submittedAt"
     `, [employeeId, taskId, feeling, comment, difficulties, supportRequest, needsSupport, needsSupport ? "open" : "not_needed"]);
     await client.query(`
-      INSERT INTO public.employee_plan_task_progress (employee_plan_task_id, employee_id, is_completed, completed_at, updated_at)
-      VALUES ($1, $2, TRUE, CURRENT_TIMESTAMP, CURRENT_TIMESTAMP)
-      ON CONFLICT (employee_plan_task_id) DO UPDATE SET is_completed = TRUE, completed_at = CURRENT_TIMESTAMP, updated_at = CURRENT_TIMESTAMP
+      INSERT INTO public.employee_plan_task_progress (employee_plan_task_id, employee_id, is_completed, status, completed_at, updated_by_employee_id, updated_at)
+      VALUES ($1, $2, TRUE, 'ready', CURRENT_TIMESTAMP, $2, CURRENT_TIMESTAMP)
+      ON CONFLICT (employee_plan_task_id) DO UPDATE SET is_completed = TRUE, status = 'ready', completed_at = CURRENT_TIMESTAMP, updated_by_employee_id = $2, updated_at = CURRENT_TIMESTAMP
     `, [taskId, employeeId]);
+    await client.query(`INSERT INTO public.employee_plan_task_history (employee_plan_task_id, actor_employee_id, action, new_value)
+      VALUES ($1, $2, 'employee_confirmation', 'ready')`, [taskId, employeeId]);
     await client.query("COMMIT");
     return response.status(201).json(result.rows[0]);
   } catch (error) {
@@ -481,10 +495,12 @@ app.post("/api/me/plan/tasks/:taskId/feedback", requireAuthenticated, async (req
         what_to_improve AS "whatToImprove", submitted_at AS "submittedAt"
     `, [onboarding.rows[0].onboarding_id, employeeId, taskId, rating, whatWentWell, whatToImprove]);
     await client.query(`
-      INSERT INTO public.employee_plan_task_progress (employee_plan_task_id, employee_id, is_completed, completed_at, updated_at)
-      VALUES ($1, $2, TRUE, CURRENT_TIMESTAMP, CURRENT_TIMESTAMP)
-      ON CONFLICT (employee_plan_task_id) DO UPDATE SET is_completed = TRUE, completed_at = CURRENT_TIMESTAMP, updated_at = CURRENT_TIMESTAMP
+      INSERT INTO public.employee_plan_task_progress (employee_plan_task_id, employee_id, is_completed, status, completed_at, updated_by_employee_id, updated_at)
+      VALUES ($1, $2, TRUE, 'ready', CURRENT_TIMESTAMP, $2, CURRENT_TIMESTAMP)
+      ON CONFLICT (employee_plan_task_id) DO UPDATE SET is_completed = TRUE, status = 'ready', completed_at = CURRENT_TIMESTAMP, updated_by_employee_id = $2, updated_at = CURRENT_TIMESTAMP
     `, [taskId, employeeId]);
+    await client.query(`INSERT INTO public.employee_plan_task_history (employee_plan_task_id, actor_employee_id, action, new_value)
+      VALUES ($1, $2, 'employee_confirmation', 'ready')`, [taskId, employeeId]);
     await client.query("COMMIT");
     return response.status(201).json(result.rows[0]);
   } catch (error) {
@@ -971,6 +987,182 @@ function isValidDateOnly(value) {
   return !Number.isNaN(date.valueOf()) && date.toISOString().slice(0, 10) === value;
 }
 
+async function canManagePreparationTask(employeeId, isHrAdmin, taskId, client = pool) {
+  const result = await client.query(`
+    SELECT task.employee_plan_task_id
+    FROM public.employee_plan_tasks AS task
+    WHERE task.employee_plan_task_id = $1
+      AND task.task_type = 'preparation'
+      AND EXISTS (SELECT 1 FROM public.stage_templates AS stage
+        WHERE stage.stage_template_id = task.stage_template_id AND stage.stage_code = 'pre-entry')
+      AND ($3::boolean OR task.owner_employee_id = $2 OR EXISTS (
+        SELECT 1 FROM public.employee_preparation_department_access AS access
+        WHERE access.employee_id = $2 AND access.department_id = task.responsible_department_id
+      ))
+  `, [taskId, employeeId, isHrAdmin]);
+  return result.rowCount > 0;
+}
+
+app.get("/api/preparation/access", requireAuthenticated, async (request, response) => {
+  try {
+    const employeeId = request.authenticatedEmployee.employee_id;
+    const departments = request.authenticatedEmployee.is_hr_admin
+      ? await pool.query("SELECT department_id AS id, name FROM public.departments ORDER BY name")
+      : await pool.query(`SELECT department.department_id AS id, department.name
+          FROM public.employee_preparation_department_access AS access
+          INNER JOIN public.departments AS department ON department.department_id = access.department_id
+          WHERE access.employee_id = $1 ORDER BY department.name`, [employeeId]);
+    const assigned = await pool.query(`SELECT 1 FROM public.employee_plan_tasks AS task
+      INNER JOIN public.stage_templates AS stage ON stage.stage_template_id = task.stage_template_id
+      WHERE task.owner_employee_id = $1 AND task.task_type = 'preparation' AND stage.stage_code = 'pre-entry' LIMIT 1`, [employeeId]);
+    return response.json({ canManage: request.authenticatedEmployee.is_hr_admin || departments.rowCount > 0 || assigned.rowCount > 0, departments: departments.rows });
+  } catch (error) {
+    console.error("Could not load preparation access:", error.message);
+    return response.status(500).json({ error: "Não foi possível carregar as permissões de preparação." });
+  }
+});
+
+app.get("/api/preparation/tasks", requireAuthenticated, async (request, response) => {
+  const employeeId = request.authenticatedEmployee.employee_id;
+  const isHrAdmin = request.authenticatedEmployee.is_hr_admin === true;
+  try {
+    const result = await pool.query(`
+      SELECT task.employee_plan_task_id AS id, task.employee_id AS "employeeId", employee.full_name AS "employeeName",
+        task.title, task.description, task.category, task.owner_employee_id AS "ownerEmployeeId",
+        owner.full_name AS "ownerName", task.owner_role AS "ownerRole", task.responsible_department_id AS "departmentId",
+        department.name AS department, task.due_offset_days AS "dueOffsetDays",
+        COALESCE(onboarding.start_date, employee.created_at::date) AS "startDate",
+        COALESCE(onboarding.start_date, employee.created_at::date) + task.due_offset_days AS "dueDate",
+        COALESCE(progress.status, 'not_started') AS status, task.shipping_carrier AS carrier,
+        task.shipping_tracking_code AS "trackingCode", task.shipping_tracking_url AS "trackingUrl",
+        (SELECT COUNT(*)::int FROM public.employee_plan_task_issues AS issue
+          WHERE issue.employee_plan_task_id = task.employee_plan_task_id AND issue.status <> 'resolved') AS "openIssueCount",
+        COALESCE((SELECT json_agg(json_build_object('id', issue.employee_plan_task_issue_id, 'description', issue.description,
+          'status', issue.status, 'resolutionNote', issue.resolution_note, 'createdAt', issue.created_at) ORDER BY issue.created_at DESC)
+          FROM public.employee_plan_task_issues AS issue WHERE issue.employee_plan_task_id = task.employee_plan_task_id), '[]'::json) AS issues,
+        COALESCE((SELECT json_agg(json_build_object('id', entry.id, 'actorName', entry.actor_name,
+          'action', entry.action, 'newValue', entry.new_value, 'createdAt', entry.created_at) ORDER BY entry.created_at DESC)
+          FROM (SELECT history.employee_plan_task_history_id AS id, actor.full_name AS actor_name,
+            history.action, history.new_value, history.created_at FROM public.employee_plan_task_history AS history
+            INNER JOIN public.employees AS actor ON actor.employee_id = history.actor_employee_id
+            WHERE history.employee_plan_task_id = task.employee_plan_task_id ORDER BY history.created_at DESC LIMIT 5) AS entry), '[]'::json) AS history
+      FROM public.employee_plan_tasks AS task
+      INNER JOIN public.employees AS employee ON employee.employee_id = task.employee_id
+      LEFT JOIN public.employees AS owner ON owner.employee_id = task.owner_employee_id
+      LEFT JOIN public.departments AS department ON department.department_id = task.responsible_department_id
+      INNER JOIN public.stage_templates AS stage ON stage.stage_template_id = task.stage_template_id
+      LEFT JOIN public.employee_plan_task_progress AS progress ON progress.employee_plan_task_id = task.employee_plan_task_id
+        AND progress.employee_id = task.employee_id
+      LEFT JOIN LATERAL (SELECT start_date FROM public.onboardings WHERE employee_id = employee.employee_id AND status = 'active'
+        ORDER BY updated_at DESC, onboarding_id DESC LIMIT 1) AS onboarding ON TRUE
+      WHERE task.task_type = 'preparation' AND stage.stage_code = 'pre-entry' AND employee.is_active IS TRUE
+        AND ($2::boolean OR task.owner_employee_id = $1 OR EXISTS (
+          SELECT 1 FROM public.employee_preparation_department_access AS access
+          WHERE access.employee_id = $1 AND access.department_id = task.responsible_department_id
+        ))
+      ORDER BY COALESCE(onboarding.start_date, employee.created_at::date), department.name, "dueDate", employee.full_name, task.display_order
+    `, [employeeId, isHrAdmin]);
+    return response.json({ tasks: result.rows });
+  } catch (error) {
+    console.error("Could not load preparation tasks:", error.message);
+    return response.status(500).json({ error: "Não foi possível carregar as novas admissões." });
+  }
+});
+
+app.patch("/api/preparation/tasks/:taskId/status", requireAuthenticated, async (request, response) => {
+  const taskId = parseAccountId(request.params.taskId);
+  const status = request.body?.status;
+  const statuses = new Set(["not_started", "in_progress", "waiting_third_party", "ready"]);
+  if (!taskId || !statuses.has(status)) return response.status(400).json({ error: "Selecione um estado de preparação válido." });
+  const actorId = request.authenticatedEmployee.employee_id;
+  const client = await pool.connect();
+  try {
+    await client.query("BEGIN");
+    const task = await client.query(`SELECT employee_id FROM public.employee_plan_tasks WHERE employee_plan_task_id = $1 AND task_type = 'preparation' FOR UPDATE`, [taskId]);
+    if (!task.rowCount || !(await canManagePreparationTask(actorId, request.authenticatedEmployee.is_hr_admin === true, taskId, client))) {
+      await client.query("ROLLBACK");
+      return response.status(404).json({ error: "Item de preparação não encontrado." });
+    }
+    const targetEmployeeId = task.rows[0].employee_id;
+    const prior = await client.query("SELECT status FROM public.employee_plan_task_progress WHERE employee_plan_task_id = $1 AND employee_id = $2", [taskId, targetEmployeeId]);
+    await client.query(`INSERT INTO public.employee_plan_task_progress
+        (employee_plan_task_id, employee_id, status, is_completed, completed_at, updated_by_employee_id, updated_at)
+      VALUES ($1, $2, $3, $4, CASE WHEN $4 THEN CURRENT_TIMESTAMP END, $5, CURRENT_TIMESTAMP)
+      ON CONFLICT (employee_plan_task_id) DO UPDATE SET status = EXCLUDED.status,
+        is_completed = EXCLUDED.is_completed, completed_at = EXCLUDED.completed_at,
+        updated_by_employee_id = EXCLUDED.updated_by_employee_id, updated_at = CURRENT_TIMESTAMP`,
+    [taskId, targetEmployeeId, status, status === "ready", actorId]);
+    await client.query(`INSERT INTO public.employee_plan_task_history (employee_plan_task_id, actor_employee_id, action, previous_value, new_value)
+      VALUES ($1, $2, 'status', $3, $4)`, [taskId, actorId, prior.rows[0]?.status ?? "not_started", status]);
+    await client.query("COMMIT");
+    return response.json({ id: taskId, status });
+  } catch (error) {
+    await client.query("ROLLBACK").catch(() => undefined);
+    console.error("Could not update preparation status:", error.message);
+    return response.status(500).json({ error: "Não foi possível atualizar o estado do item." });
+  } finally {
+    client.release();
+  }
+});
+
+app.patch("/api/preparation/tasks/:taskId/shipment", requireAuthenticated, async (request, response) => {
+  const taskId = parseAccountId(request.params.taskId);
+  const carrier = typeof request.body?.carrier === "string" ? request.body.carrier.trim() : "";
+  const trackingCode = typeof request.body?.trackingCode === "string" ? request.body.trackingCode.trim() : "";
+  const trackingUrl = typeof request.body?.trackingUrl === "string" ? request.body.trackingUrl.trim() : "";
+  if (!taskId || carrier.length > 120 || trackingCode.length > 180 || trackingUrl.length > 1000) return response.status(400).json({ error: "Confira os dados de rastreio." });
+  if (trackingUrl && !/^https?:\/\//i.test(trackingUrl)) return response.status(400).json({ error: "O link de rastreio deve começar com http:// ou https://." });
+  const actorId = request.authenticatedEmployee.employee_id;
+  try {
+    if (!(await canManagePreparationTask(actorId, request.authenticatedEmployee.is_hr_admin === true, taskId))) return response.status(404).json({ error: "Item de preparação não encontrado." });
+    const result = await pool.query(`UPDATE public.employee_plan_tasks SET shipping_carrier = NULLIF($2, ''),
+        shipping_tracking_code = NULLIF($3, ''), shipping_tracking_url = NULLIF($4, ''), updated_at = CURRENT_TIMESTAMP
+      WHERE employee_plan_task_id = $1 AND task_type = 'preparation'
+      RETURNING employee_plan_task_id AS id`, [taskId, carrier, trackingCode, trackingUrl]);
+    if (!result.rowCount) return response.status(404).json({ error: "Item de preparação não encontrado." });
+    await pool.query(`INSERT INTO public.employee_plan_task_history (employee_plan_task_id, actor_employee_id, action, new_value)
+      VALUES ($1, $2, 'shipment', $3)`, [taskId, actorId, JSON.stringify({ carrier, trackingCode, trackingUrl })]);
+    return response.json({ id: taskId, carrier, trackingCode, trackingUrl });
+  } catch (error) {
+    console.error("Could not save shipment tracking:", error.message);
+    return response.status(500).json({ error: "Não foi possível salvar os dados de rastreio." });
+  }
+});
+
+app.patch("/api/preparation/issues/:issueId", requireAuthenticated, async (request, response) => {
+  const issueId = parseAccountId(request.params.issueId);
+  const status = request.body?.status;
+  const resolutionNote = typeof request.body?.resolutionNote === "string" ? request.body.resolutionNote.trim() : "";
+  if (!issueId || !["in_review", "resolved"].includes(status) || resolutionNote.length > 2000) {
+    return response.status(400).json({ error: "Informe um estado e uma observação válidos." });
+  }
+  const actorId = request.authenticatedEmployee.employee_id;
+  const client = await pool.connect();
+  try {
+    await client.query("BEGIN");
+    const issue = await client.query(`SELECT issue.employee_plan_task_id AS "taskId", issue.status
+      FROM public.employee_plan_task_issues AS issue WHERE issue.employee_plan_task_issue_id = $1 FOR UPDATE`, [issueId]);
+    if (!issue.rowCount || !(await canManagePreparationTask(actorId, request.authenticatedEmployee.is_hr_admin === true, issue.rows[0]?.taskId, client))) {
+      await client.query("ROLLBACK");
+      return response.status(404).json({ error: "Problema não encontrado." });
+    }
+    await client.query(`UPDATE public.employee_plan_task_issues SET status = $2,
+      resolution_note = NULLIF($3, ''), resolved_by_employee_id = CASE WHEN $2 = 'resolved' THEN $4 ELSE NULL END,
+      resolved_at = CASE WHEN $2 = 'resolved' THEN CURRENT_TIMESTAMP ELSE NULL END
+      WHERE employee_plan_task_issue_id = $1`, [issueId, status, resolutionNote, actorId]);
+    await client.query(`INSERT INTO public.employee_plan_task_history (employee_plan_task_id, actor_employee_id, action, previous_value, new_value)
+      VALUES ($1, $2, 'issue_status', $3, $4)`, [issue.rows[0].taskId, actorId, issue.rows[0].status, status]);
+    await client.query("COMMIT");
+    return response.json({ id: issueId, status, resolutionNote });
+  } catch (error) {
+    await client.query("ROLLBACK").catch(() => undefined);
+    console.error("Could not update preparation issue:", error.message);
+    return response.status(500).json({ error: "Não foi possível atualizar o problema." });
+  } finally {
+    client.release();
+  }
+});
+
 async function getUnreadSupportMessageCount(employeeId, isHrAdmin) {
   const result = await pool.query(`
     SELECT COUNT(message.employee_plan_task_issue_message_id)::int AS count
@@ -1108,6 +1300,14 @@ async function saveEmployeeOrganization(client, employeeId, departmentIds, teamI
   }
 }
 
+async function saveEmployeePreparationAccess(client, employeeId, departmentIds, grantedByEmployeeId) {
+  await client.query("DELETE FROM public.employee_preparation_department_access WHERE employee_id = $1", [employeeId]);
+  for (const departmentId of departmentIds) {
+    await client.query(`INSERT INTO public.employee_preparation_department_access
+      (employee_id, department_id, granted_by_employee_id) VALUES ($1, $2, $3)`, [employeeId, departmentId, grantedByEmployeeId]);
+  }
+}
+
 async function hashPassword(password) {
   const salt = randomBytes(16).toString("hex");
   const hash = await scrypt(password, salt, 64);
@@ -1124,6 +1324,8 @@ function validatePlanTasks(tasks) {
     if (typeof task.category !== "string" || !task.category.trim() || task.category.trim().length > 80) return "Informe uma categoria com até 80 caracteres.";
     if (typeof task.ownerRole !== "string" || !task.ownerRole.trim() || task.ownerRole.trim().length > 120) return "Informe a pessoa responsável.";
     if (!Number.isSafeInteger(Number(task.ownerEmployeeId)) || Number(task.ownerEmployeeId) <= 0) return "Selecione uma pessoa responsável para cada tarefa.";
+    if (task.responsibleDepartmentId !== undefined && task.responsibleDepartmentId !== null && task.responsibleDepartmentId !== "" &&
+      (!Number.isSafeInteger(Number(task.responsibleDepartmentId)) || Number(task.responsibleDepartmentId) <= 0)) return "Selecione uma área responsável válida.";
     if (!validTypes.has(task.taskType)) return "O tipo de tarefa é inválido.";
     if (!Number.isSafeInteger(Number(task.dueOffsetDays)) || Number(task.dueOffsetDays) < -32768 || Number(task.dueOffsetDays) > 32767) return "O prazo deve ser um número de dias entre -32.768 e 32.767.";
     if (typeof task.required !== "boolean") return "Informe se a tarefa é obrigatória.";
@@ -1138,9 +1340,10 @@ app.get("/api/hr/task-presets", requireHr, async (_request, response) => {
         task.hr_task_preset_task_id AS "taskId", task.stage_template_id AS "stageTemplateId",
         stage.name AS "stageName", stage.display_order AS "stageOrder", task.title,
         task.description AS "taskDescription",
-        CASE task.task_type WHEN 'preparation' THEN 'Preparação' WHEN 'training' THEN 'Treinamento' WHEN 'checkin' THEN 'Check-in' ELSE 'Tarefa' END AS category,
+        task.category,
         task.task_type AS "taskType",
         task.owner_role AS "ownerRole", task.owner_employee_id AS "ownerEmployeeId",
+        task.responsible_department_id AS "responsibleDepartmentId",
         task_owner.full_name AS "ownerName", task.due_offset_days AS "dueOffsetDays",
         task.is_required AS required
       FROM public.hr_task_presets AS preset
@@ -1156,7 +1359,7 @@ app.get("/api/hr/task-presets", requireHr, async (_request, response) => {
         id: row.taskId, stageTemplateId: row.stageTemplateId, stageName: row.stageName,
         stageOrder: row.stageOrder, title: row.title, description: row.taskDescription,
         category: row.category, taskType: row.taskType, ownerRole: row.ownerRole,
-        ownerEmployeeId: row.ownerEmployeeId, ownerName: row.ownerName,
+        ownerEmployeeId: row.ownerEmployeeId, ownerName: row.ownerName, responsibleDepartmentId: row.responsibleDepartmentId,
         dueOffsetDays: row.dueOffsetDays, required: row.required,
       });
     }
@@ -1194,6 +1397,12 @@ app.post("/api/hr/task-presets", requireHr, async (request, response) => {
       await client.query("ROLLBACK");
       return response.status(400).json({ error: "Um pacote contém uma pessoa responsável inexistente ou inativa." });
     }
+    const departmentIds = [...new Set(tasks.map((task) => Number(task.responsibleDepartmentId)).filter((id) => Number.isSafeInteger(id) && id > 0))];
+    const validDepartments = departmentIds.length ? await client.query("SELECT department_id FROM public.departments WHERE department_id = ANY($1::int[])", [departmentIds]) : { rowCount: 0 };
+    if (validDepartments.rowCount !== departmentIds.length) {
+      await client.query("ROLLBACK");
+      return response.status(400).json({ error: "Um pacote contém uma área responsável inexistente." });
+    }
     const presetResult = await client.query(`
       INSERT INTO public.hr_task_presets (name, description, created_by)
       VALUES ($1, $2, $3)
@@ -1208,10 +1417,13 @@ app.post("/api/hr/task-presets", requireHr, async (request, response) => {
       await client.query(`
         INSERT INTO public.hr_task_preset_tasks (
           hr_task_preset_id, stage_template_id, title, description, category, task_type, owner_employee_id,
-          owner_role, due_offset_days, is_required, display_order
-        ) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11)
-      `, [preset.id, stageId, task.title.trim(), task.description.trim(), taskCategoryLabels[task.taskType], task.taskType,
-        Number(task.ownerEmployeeId), task.ownerRole.trim(), Number(task.dueOffsetDays), task.required, displayOrder]);
+          owner_role, due_offset_days, is_required, display_order, responsible_department_id
+        ) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, COALESCE($12::int,
+          (SELECT COALESCE((SELECT membership.department_id FROM public.employee_departments AS membership
+            WHERE membership.employee_id = owner.employee_id AND membership.is_primary IS TRUE LIMIT 1), owner.department_id)
+            FROM public.employees AS owner WHERE owner.employee_id = $7)))
+      `, [preset.id, stageId, task.title.trim(), task.description.trim(), task.category, task.taskType,
+        Number(task.ownerEmployeeId), task.ownerRole.trim(), Number(task.dueOffsetDays), task.required, displayOrder, task.responsibleDepartmentId || null]);
     }
     await client.query("COMMIT");
     return response.status(201).json({ ...preset, tasks });
@@ -1263,10 +1475,14 @@ app.get("/api/hr/accounts", requireHr, async (_request, response) => {
           FROM public.employee_teams AS membership
           INNER JOIN public.teams AS team ON team.team_id = membership.team_id
           WHERE membership.employee_id = employee.employee_id AND team.is_active IS TRUE), '[]'::json) AS teams,
+        COALESCE((SELECT json_agg(access.department_id ORDER BY department.name)
+          FROM public.employee_preparation_department_access AS access
+          INNER JOIN public.departments AS department ON department.department_id = access.department_id
+          WHERE access.employee_id = employee.employee_id), '[]'::json) AS "preparationDepartmentIds",
         employee.manager_employee_id AS "managerEmployeeId",
         manager.full_name AS "managerName", employee.is_active AS "isActive",
         onboarding.mentor_employee_id AS "mentorEmployeeId",
-        onboarding.start_date AS "startDate",
+        COALESCE(onboarding.start_date, employee.created_at::date) AS "startDate",
         mentor.full_name AS "mentorName",
         (SELECT COUNT(*)::int FROM public.employee_plan_tasks AS plan_task
           WHERE plan_task.employee_id = employee.employee_id) AS "planTaskCount"
@@ -1367,7 +1583,7 @@ app.get("/api/hr/responsibles", requireHr, async (_request, response) => {
   try {
     const result = await pool.query(`
       SELECT employee.employee_id AS id, employee.full_name AS name,
-        employee.job_title AS "jobTitle",
+        employee.job_title AS "jobTitle", employee.department_id AS "departmentId",
         (SELECT string_agg(department.name, ', ' ORDER BY department.name)
           FROM public.employee_departments AS membership
           INNER JOIN public.departments AS department ON department.department_id = membership.department_id
@@ -1788,15 +2004,18 @@ app.post("/api/hr/accounts", requireHr, async (request, response) => {
   const email = typeof request.body?.email === "string" ? request.body.email.trim().toLowerCase() : "";
   const jobTitle = typeof request.body?.jobTitle === "string" ? request.body.jobTitle.trim() : "";
   const departmentIds = parseOrganizationIds(request.body?.departmentIds, request.body?.departmentId);
+  const preparationDepartmentIds = parseOrganizationIds(request.body?.preparationDepartmentIds);
   const teamIds = parseOrganizationIds(request.body?.teamIds);
   const departmentId = departmentIds?.[0] ?? null;
   const managerEmployeeId = request.body?.managerEmployeeId === "" || request.body?.managerEmployeeId == null ? null : Number(request.body.managerEmployeeId);
   const mentorEmployeeId = request.body?.mentorEmployeeId === "" || request.body?.mentorEmployeeId == null ? null : Number(request.body.mentorEmployeeId);
+  const startDate = request.body?.startDate;
   const password = typeof request.body?.password === "string" ? request.body.password : "";
   if (!name || name.length > 160 || !email || email.length > 254 || !/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(email)) {
     return response.status(400).json({ error: "Informe nome e um e-mail válido." });
   }
   if (jobTitle.length > 120) return response.status(400).json({ error: "O cargo pode ter até 120 caracteres." });
+  if (!isValidDateOnly(startDate)) return response.status(400).json({ error: "Informe uma data de entrada válida." });
   if (!password || password.length < 8 || password.length > 1024) {
     return response.status(400).json({ error: "A senha inicial deve ter entre 8 e 1.024 caracteres." });
   }
@@ -1810,6 +2029,8 @@ app.post("/api/hr/accounts", requireHr, async (request, response) => {
   try {
     const organizationError = await validateOrganizationIds(departmentIds, teamIds);
     if (organizationError) return response.status(400).json({ error: organizationError });
+    const preparationAccessError = await validateOrganizationIds(preparationDepartmentIds, []);
+    if (preparationAccessError) return response.status(400).json({ error: "Selecione áreas válidas para as permissões de preparação." });
     if (managerEmployeeId !== null) {
       const manager = await pool.query("SELECT 1 FROM public.employees WHERE employee_id = $1 AND is_active IS TRUE AND is_hr_admin IS FALSE", [managerEmployeeId]);
       if (!manager.rowCount) return response.status(400).json({ error: "A liderança selecionada não existe ou está inativa." });
@@ -1831,14 +2052,11 @@ app.post("/api/hr/accounts", requireHr, async (request, response) => {
         department_id AS "departmentId", manager_employee_id AS "managerEmployeeId", TRUE AS "isActive"
       `, [email, name, jobTitle, departmentId, managerEmployeeId, passwordHash]);
       await saveEmployeeOrganization(client, result.rows[0].id, departmentIds, teamIds);
-      if (mentorEmployeeId !== null) {
-        await client.query(`
-          INSERT INTO public.onboardings (employee_id, mentor_employee_id, start_date, status)
-          SELECT employee.employee_id, $2, employee.created_at::date, 'active'
-          FROM public.employees AS employee
-          WHERE employee.employee_id = $1
-        `, [result.rows[0].id, mentorEmployeeId]);
-      }
+      await saveEmployeePreparationAccess(client, result.rows[0].id, preparationDepartmentIds, request.authenticatedEmployee.employee_id);
+      await client.query(`
+        INSERT INTO public.onboardings (employee_id, mentor_employee_id, start_date, status)
+        VALUES ($1, $2, $3::date, 'active')
+      `, [result.rows[0].id, mentorEmployeeId, startDate]);
       await client.query("COMMIT");
       transactionStarted = false;
       return response.status(201).json({ ...result.rows[0], departmentIds, teamIds });
@@ -1862,21 +2080,29 @@ app.patch("/api/hr/accounts/:accountId", requireHr, async (request, response) =>
   const email = typeof request.body?.email === "string" ? request.body.email.trim().toLowerCase() : "";
   const jobTitle = typeof request.body?.jobTitle === "string" ? request.body.jobTitle.trim() : "";
   const departmentIds = parseOrganizationIds(request.body?.departmentIds, request.body?.departmentId);
+  const hasPreparationDepartmentIds = Object.hasOwn(request.body ?? {}, "preparationDepartmentIds");
+  const preparationDepartmentIds = hasPreparationDepartmentIds ? parseOrganizationIds(request.body?.preparationDepartmentIds) : null;
   const teamIds = parseOrganizationIds(request.body?.teamIds);
   const departmentId = departmentIds?.[0] ?? null;
   const managerEmployeeId = request.body?.managerEmployeeId === "" || request.body?.managerEmployeeId == null ? null : Number(request.body.managerEmployeeId);
   const mentorEmployeeId = request.body?.mentorEmployeeId === "" || request.body?.mentorEmployeeId == null ? null : Number(request.body.mentorEmployeeId);
+  const startDate = request.body?.startDate;
   const isActive = request.body?.isActive;
   if (!name || name.length > 160 || !email || email.length > 254 || !/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(email)) {
     return response.status(400).json({ error: "Informe nome e um e-mail válido." });
   }
   if (jobTitle.length > 120) return response.status(400).json({ error: "O cargo pode ter até 120 caracteres." });
+  if (!isValidDateOnly(startDate)) return response.status(400).json({ error: "Informe uma data de entrada válida." });
   if (typeof isActive !== "boolean") return response.status(400).json({ error: "Informe se a conta está ativa." });
   if (managerEmployeeId !== null && (!Number.isSafeInteger(managerEmployeeId) || managerEmployeeId <= 0 || managerEmployeeId === accountId)) return response.status(400).json({ error: "Selecione uma liderança válida." });
   if (mentorEmployeeId !== null && (!Number.isSafeInteger(mentorEmployeeId) || mentorEmployeeId <= 0 || mentorEmployeeId === accountId || mentorEmployeeId === managerEmployeeId)) return response.status(400).json({ error: "Selecione uma pessoa mentora diferente do funcionário e da liderança direta." });
   try {
     const organizationError = await validateOrganizationIds(departmentIds, teamIds);
     if (organizationError) return response.status(400).json({ error: organizationError });
+    if (hasPreparationDepartmentIds) {
+      const preparationAccessError = await validateOrganizationIds(preparationDepartmentIds, []);
+      if (preparationAccessError) return response.status(400).json({ error: "Selecione áreas válidas para as permissões de preparação." });
+    }
     const target = await pool.query("SELECT 1 FROM public.employees WHERE employee_id = $1 AND is_hr_admin IS FALSE", [accountId]);
     if (!target.rowCount) return response.status(404).json({ error: "Pessoa não encontrada." });
     if (managerEmployeeId !== null) {
@@ -1901,9 +2127,10 @@ app.patch("/api/hr/accounts/:accountId", requireHr, async (request, response) =>
         employee.manager_employee_id AS "managerEmployeeId", employee.is_active AS "isActive"
       `, [accountId, email, name, jobTitle, departmentId, managerEmployeeId, isActive]);
       await saveEmployeeOrganization(client, accountId, departmentIds, teamIds);
+      if (hasPreparationDepartmentIds) await saveEmployeePreparationAccess(client, accountId, preparationDepartmentIds, request.authenticatedEmployee.employee_id);
       const activeOnboarding = await client.query(`
         UPDATE public.onboardings AS onboarding
-        SET mentor_employee_id = $2, updated_at = CURRENT_TIMESTAMP
+        SET mentor_employee_id = $2, start_date = $3::date, updated_at = CURRENT_TIMESTAMP
         WHERE onboarding.onboarding_id = (
           SELECT candidate.onboarding_id
           FROM public.onboardings AS candidate
@@ -1912,14 +2139,12 @@ app.patch("/api/hr/accounts/:accountId", requireHr, async (request, response) =>
           LIMIT 1
         )
         RETURNING onboarding.onboarding_id
-      `, [accountId, mentorEmployeeId]);
-      if (!activeOnboarding.rowCount && mentorEmployeeId !== null) {
+      `, [accountId, mentorEmployeeId, startDate]);
+      if (!activeOnboarding.rowCount) {
         await client.query(`
           INSERT INTO public.onboardings (employee_id, mentor_employee_id, start_date, status)
-          SELECT employee.employee_id, $2, employee.created_at::date, 'active'
-          FROM public.employees AS employee
-          WHERE employee.employee_id = $1
-        `, [accountId, mentorEmployeeId]);
+          VALUES ($1, $2, $3::date, 'active')
+        `, [accountId, mentorEmployeeId, startDate]);
       }
       await client.query("COMMIT");
       transactionStarted = false;
@@ -1947,14 +2172,16 @@ app.get("/api/hr/accounts/:accountId/plan", requireHr, async (request, response)
       SELECT plan_task.employee_plan_task_id AS id, plan_task.stage_template_id AS "stageTemplateId",
         stage.name AS "stageName", stage.display_order AS "stageOrder", plan_task.title,
         plan_task.description,
-        CASE plan_task.task_type WHEN 'preparation' THEN 'Preparação' WHEN 'training' THEN 'Treinamento' WHEN 'checkin' THEN 'Check-in' ELSE 'Tarefa' END AS category,
+        plan_task.category,
         plan_task.task_type AS "taskType",
         plan_task.owner_role AS "ownerRole", plan_task.owner_employee_id AS "ownerEmployeeId",
         task_owner.full_name AS "ownerName", plan_task.due_offset_days AS "dueOffsetDays",
+        plan_task.responsible_department_id AS "responsibleDepartmentId", department.name AS "responsibleDepartment",
         plan_task.is_required AS required
       FROM public.employee_plan_tasks AS plan_task
       INNER JOIN public.stage_templates AS stage ON stage.stage_template_id = plan_task.stage_template_id
       LEFT JOIN public.employees AS task_owner ON task_owner.employee_id = plan_task.owner_employee_id
+      LEFT JOIN public.departments AS department ON department.department_id = plan_task.responsible_department_id
       WHERE plan_task.employee_id = $1
       ORDER BY stage.display_order, plan_task.display_order, plan_task.employee_plan_task_id;
     `, [accountId]);
@@ -2013,6 +2240,14 @@ app.put("/api/hr/accounts/:accountId/plan", requireHr, async (request, response)
         return response.status(400).json({ error: "Uma ou mais pessoas responsáveis não existem ou estão inativas." });
       }
     }
+    const departmentIds = [...new Set(tasks.map((task) => Number(task.responsibleDepartmentId)).filter((id) => Number.isSafeInteger(id) && id > 0))];
+    if (departmentIds.length) {
+      const validDepartments = await client.query("SELECT department_id FROM public.departments WHERE department_id = ANY($1::int[])", [departmentIds]);
+      if (validDepartments.rowCount !== departmentIds.length) {
+        await client.query("ROLLBACK");
+        return response.status(400).json({ error: "Uma ou mais áreas responsáveis não existem." });
+      }
+    }
     const resourceIds = [...new Set(resources.flatMap((resource) => resource.resourceIds.map(Number)))];
     if (resourceIds.length) {
       const published = await client.query("SELECT resource_id FROM public.resources WHERE status = 'published' AND resource_id = ANY($1::bigint[])", [resourceIds]);
@@ -2036,11 +2271,14 @@ app.put("/api/hr/accounts/:accountId/plan", requireHr, async (request, response)
       await client.query(`
         INSERT INTO public.employee_plan_tasks (
           employee_id, stage_template_id, title, description, category, task_type,
-          owner_employee_id, owner_role, due_offset_days, is_required, display_order, updated_at
-        ) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, CURRENT_TIMESTAMP)
-      `, [accountId, stageId, task.title.trim(), task.description.trim(), taskCategoryLabels[task.taskType], task.taskType,
+          owner_employee_id, owner_role, due_offset_days, is_required, display_order, responsible_department_id, updated_at
+        ) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, COALESCE($12::int,
+          (SELECT COALESCE((SELECT membership.department_id FROM public.employee_departments AS membership
+            WHERE membership.employee_id = employee.employee_id AND membership.is_primary IS TRUE LIMIT 1), employee.department_id)
+            FROM public.employees AS employee WHERE employee.employee_id = $7)), CURRENT_TIMESTAMP)
+      `, [accountId, stageId, task.title.trim(), task.description.trim(), task.category, task.taskType,
         task.ownerEmployeeId == null || task.ownerEmployeeId === "" ? null : Number(task.ownerEmployeeId),
-        task.ownerRole.trim(), Number(task.dueOffsetDays), task.required, displayOrder]);
+        task.ownerRole.trim(), Number(task.dueOffsetDays), task.required, displayOrder, task.responsibleDepartmentId || null]);
     }
     const resourceOrders = new Map();
     for (const stageResources of resources) {
