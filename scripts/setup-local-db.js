@@ -52,9 +52,10 @@ try {
   const supportResolutionConfirmationMigration = await readFile(new URL("../database/postgresql/019-support-resolution-confirmation.sql", import.meta.url), "utf8");
   const employeeCheckInsSupportMigration = await readFile(new URL("../database/postgresql/020-employee-checkins-support.sql", import.meta.url), "utf8");
   const supportRequestChatMigration = await readFile(new URL("../database/postgresql/021-support-request-chat.sql", import.meta.url), "utf8");
+  const preEntryDueDatesMigration = await readFile(new URL("../database/postgresql/022-pre-entry-due-dates.sql", import.meta.url), "utf8");
   const seed = await readFile(new URL("../database/postgresql/002-seed.sql", import.meta.url), "utf8");
   const resources = await readFile(new URL("../database/postgresql/003-local-resources.sql", import.meta.url), "utf8");
-  await database.query(`BEGIN;\n${schema}\n${authMigration}\n${hrPlansMigration}\n${hrAccessMigration}\n${planResourcesMigration}\n${planConfigurationsMigration}\n${resourceFilesMigration}\n${removeResourceEstimatedMinutesMigration}\n${hrTaskPresetsMigration}\n${taskResponsiblePeopleMigration}\n${seed}\n${resources}\n${preEntryTaskPresets}\n${employeeOrganizationMigration}\n${teamHierarchyMigration}\n${employeePlanProgressMigration}\n${supportConversationsMigration}\n${supportMessageReadsMigration}\n${supportResolutionConfirmationMigration}\n${employeeCheckInsSupportMigration}\n${supportRequestChatMigration}\nCOMMIT;`);
+  await database.query(`BEGIN;\n${schema}\n${authMigration}\n${hrPlansMigration}\n${hrAccessMigration}\n${planResourcesMigration}\n${planConfigurationsMigration}\n${resourceFilesMigration}\n${removeResourceEstimatedMinutesMigration}\n${hrTaskPresetsMigration}\n${taskResponsiblePeopleMigration}\n${seed}\n${resources}\n${preEntryTaskPresets}\n${employeeOrganizationMigration}\n${teamHierarchyMigration}\n${employeePlanProgressMigration}\n${supportConversationsMigration}\n${supportMessageReadsMigration}\n${supportResolutionConfirmationMigration}\n${employeeCheckInsSupportMigration}\n${supportRequestChatMigration}\n${preEntryDueDatesMigration}\nCOMMIT;`);
   console.log(existingSchema.rows[0].table_name
     ? "OnRamp schema exists; demo data is up to date."
     : "OnRamp schema and demo data are ready.");

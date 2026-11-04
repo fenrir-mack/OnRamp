@@ -9,7 +9,7 @@ type NewHire = DirectoryPerson & { startDate: string };
 type Department = { id: number; name: string; description: string | null; members: DirectoryPerson[] };
 type Team = { id: number; name: string; description: string | null; parentTeamId: number | null; parentTeamName: string | null; members: DirectoryPerson[]; leaders: DirectoryPerson[] };
 type TeamNode = { team: Team; children: TeamNode[] };
-type Directory = { departments: Department[]; teams: Team[] };
+type Directory = { employees?: DirectoryPerson[]; departments: Department[]; teams: Team[] };
 type View = "areas" | "times" | "organograma" | "novas-pessoas";
 
 function buildTeamTree(teams: Team[]): TeamNode[] {
@@ -36,7 +36,7 @@ function flattenTeamTree(nodes: TeamNode[], depth = 0): { team: Team; depth: num
   ]);
 }
 
-function PeopleView({ resetVersion }: { resetVersion: number }) {
+function PeopleView({ resetVersion, openEmployeeId }: { resetVersion: number; openEmployeeId?: number | null }) {
   const [view, setView] = useState<View>("areas");
   const [selectedDepartment, setSelectedDepartment] = useState<Department | null>(null);
   const [selectedPerson, setSelectedPerson] = useState<{ person: DirectoryPerson; departmentName?: string } | null>(null);
@@ -70,6 +70,12 @@ function PeopleView({ resetVersion }: { resetVersion: number }) {
     setSelectedDepartment(null);
     setSelectedPerson(null);
   }, [resetVersion]);
+
+  useEffect(() => {
+    if (!openEmployeeId || !directory.employees) return;
+    const person = directory.employees.find((employee) => employee.id === openEmployeeId);
+    if (person) setSelectedPerson({ person, departmentName: person.department ?? undefined });
+  }, [directory.employees, openEmployeeId]);
 
   const teamTree = buildTeamTree(directory.teams);
   const teamRows = flattenTeamTree(teamTree);

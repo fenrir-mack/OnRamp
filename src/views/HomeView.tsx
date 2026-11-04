@@ -16,13 +16,12 @@ type HomeViewProps = {
   tasks: PlanTask[];
   planStatus: "loading" | "ready" | "error";
   query: string;
-  setQuery: (query: string) => void;
   resources: LibraryResource[];
   filtered: LibraryResource[];
   setActiveNav: (navigationItem: string) => void;
 };
 
-export default function HomeView({ employee, stages, tasks, planStatus, query, setQuery, resources, filtered, setActiveNav }: HomeViewProps) {
+export default function HomeView({ employee, stages, tasks, planStatus, query, resources, filtered, setActiveNav }: HomeViewProps) {
   const [mentor, setMentor] = useState<MentorProfile | null>(null);
   const [mentorLoaded, setMentorLoaded] = useState(false);
   const [showMentorProfile, setShowMentorProfile] = useState(false);
@@ -79,8 +78,6 @@ export default function HomeView({ employee, stages, tasks, planStatus, query, s
         <ProfileView employee={{ ...mentor, isHrAdmin: false }} photo={`/api/employees/${mentor.id}/profile-photo`} onPhotoChange={() => undefined} readOnly />
       </section>
     </div>}
-
-    <div className="mt-7 md:hidden"><div className="relative"><span className="absolute left-4 top-1/2 -translate-y-1/2 text-[#9b9daf]"><Icon name="search" size={19} /></span><input className="search-field bg-white" value={query} onChange={(event) => setQuery(event.target.value)} placeholder="Buscar informações..." /></div></div>
 
     <section className="mt-9"><div className="section-heading"><div><p className="eyebrow">Sua evolução</p><h2>Etapas da jornada</h2></div><button onClick={() => setActiveNav("Minha jornada")} className="section-heading__link">Ver jornada completa <Icon name="arrow" size={17} /></button></div>
       <div className="journey-timeline mt-5"><div className="journey-timeline__track">{stages.map((stage, index) => {

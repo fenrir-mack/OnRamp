@@ -34,6 +34,7 @@ export type LibraryResource = {
   tone: "indigo" | "blue" | "orange" | "purple";
   downloadUrl?: string | null;
   isExternalLink?: boolean;
+  fileName?: string | null;
 };
 
 export function Icon({ name, size = 20 }: { name: IconName; size?: number }) {

@@ -1,4 +1,4 @@
-import { useEffect, useMemo, useState } from "react";
+import { useEffect, useMemo, useRef, useState } from "react";
 import type { FormEvent } from "react";
 import { Icon } from "../components/shared";
 import EmployeeAvatar from "../components/EmployeeAvatar";
@@ -192,10 +192,12 @@ function HrPlansView({ section }: { section: "people" | "plans" }) {
   const [creatingAccount, setCreatingAccount] = useState(false);
   const [showAccountForm, setShowAccountForm] = useState(false);
   const [accountDraft, setAccountDraft] = useState({ name: "", email: "", jobTitle: "", departmentIds: [] as number[], teamIds: [] as number[], managerEmployeeId: "", mentorEmployeeId: "", password: "" });
+  const [teamSearch, setTeamSearch] = useState("");
   const [editingAccountId, setEditingAccountId] = useState<number | null>(null);
   const [peopleSearch, setPeopleSearch] = useState("");
-  const [peopleView, setPeopleView] = useState<"people" | "organization">("people");
+  const [peopleView, setPeopleView] = useState<"people" | "areas" | "teams">("people");
   const [departmentDraft, setDepartmentDraft] = useState({ name: "", description: "" });
+  const departmentDescriptionRef = useRef<HTMLTextAreaElement>(null);
   const [teamDraft, setTeamDraft] = useState({ name: "", description: "", parentTeamId: "", memberIds: [] as number[], leaderIds: [] as number[] });
   const [editingDepartmentId, setEditingDepartmentId] = useState<number | null>(null);
   const [editingTeamId, setEditingTeamId] = useState<number | null>(null);
@@ -272,8 +274,24 @@ function HrPlansView({ section }: { section: "people" | "plans" }) {
   }, [selectedAccountId]);
 
   const selectedAccount = accounts.find(({ id }) => id === selectedAccountId) ?? null;
+  const selectedAccountPlanRef = useRef<HTMLDivElement>(null);
+  useEffect(() => {
+    if (section !== "plans" || !selectedAccountId) return;
+    const frame = window.requestAnimationFrame(() => selectedAccountPlanRef.current?.scrollIntoView({ behavior: "smooth", block: "start" }));
+    return () => window.cancelAnimationFrame(frame);
+  }, [section, selectedAccountId]);
   const selectedStage = stages.find(({ id }) => id === selectedStageId) ?? null;
   const teamRows = useMemo(() => buildTeamTree(teams), [teams]);
+  const normalizedTeamSearch = teamSearch.trim().normalize("NFD").replace(/[\u0300-\u036f]/g, "").toLocaleLowerCase("pt-BR");
+  const visibleTeamRows = normalizedTeamSearch
+    ? teamRows.filter(({ team }) => team.name.normalize("NFD").replace(/[\u0300-\u036f]/g, "").toLocaleLowerCase("pt-BR").includes(normalizedTeamSearch))
+    : teamRows;
+  useEffect(() => {
+    const textarea = departmentDescriptionRef.current;
+    if (!textarea) return;
+    textarea.style.height = "auto";
+    textarea.style.height = `${textarea.scrollHeight}px`;
+  }, [departmentDraft.description]);
   const stageTasks = useMemo(
     () => tasks.filter((task) => task.stageTemplateId === selectedStageId),
     [tasks, selectedStageId],
@@ -536,6 +554,7 @@ function HrPlansView({ section }: { section: "people" | "plans" }) {
   }
 
   function openAccountForm(account?: Account) {
+    setTeamSearch("");
     setError("");
     setNotice("");
     setEditingAccountId(account?.id ?? null);
@@ -755,7 +774,8 @@ function HrPlansView({ section }: { section: "people" | "plans" }) {
     }));
   }
 
-  const filteredPeople = accounts.filter((account) => `${account.name} ${account.email} ${account.jobTitle ?? ""} ${account.departments.join(" ")} ${account.teams.join(" ")} ${account.managerName ?? ""}`.toLocaleLowerCase("pt-BR").includes(peopleSearch.toLocaleLowerCase("pt-BR")));
+  const normalizedPeopleSearch = peopleSearch.trim().normalize("NFD").replace(/[\u0300-\u036f]/g, "").toLocaleLowerCase("pt-BR");
+  const filteredPeople = accounts.filter((account) => account.name.normalize("NFD").replace(/[\u0300-\u036f]/g, "").toLocaleLowerCase("pt-BR").includes(normalizedPeopleSearch));
   const activeAccounts = accounts.filter((account) => account.isActive);
   function responsibleMatches(search: string) {
     const normalized = search.trim().toLocaleLowerCase("pt-BR");
@@ -813,9 +833,7 @@ function HrPlansView({ section }: { section: "people" | "plans" }) {
     <section>
       <header className="flex flex-wrap items-end justify-between gap-4">
         <div>
-          <p className="eyebrow">Área administrativa</p>
           <h1 className="mt-1 text-3xl font-extrabold tracking-tight">Espaço do RH</h1>
-          <p className="mt-2 max-w-2xl text-sm leading-6 text-[#777a91]">Organize as pessoas da empresa e configure a jornada de onboarding de cada conta.</p>
         </div>
         <div className="flex flex-wrap gap-2">
           {section === "people" && peopleView === "people" && <button className="button-primary h-12 px-5" onClick={() => openAccountForm()} type="button"><Icon name="people" size={16} /> Novo usuário</button>}
@@ -825,37 +843,43 @@ function HrPlansView({ section }: { section: "people" | "plans" }) {
       {error && <p className="mt-5 rounded-xl border border-red-200 bg-red-50 px-4 py-3 text-sm font-semibold text-red-700" role="alert">{error}</p>}
       {notice && <p className="mt-5 rounded-xl border border-emerald-200 bg-emerald-50 px-4 py-3 text-sm font-semibold text-emerald-700" role="status">{notice}</p>}
 
-      {section === "people" && <div className="mt-6 flex gap-2 border-b border-[#e8e8f0] pb-3"><button className={`rounded-xl px-4 py-2.5 text-sm font-bold ${peopleView === "people" ? "bg-[#f0efff] text-[#5556d8]" : "text-[#777a91] hover:bg-white"}`} onClick={() => setPeopleView("people")} type="button">Pessoas</button><button className={`rounded-xl px-4 py-2.5 text-sm font-bold ${peopleView === "organization" ? "bg-[#f0efff] text-[#5556d8]" : "text-[#777a91] hover:bg-white"}`} onClick={() => { setPeopleView("organization"); setShowAccountForm(false); setEditingAccountId(null); }} type="button">Áreas e equipes</button></div>}
+      {section === "people" && <div className="mt-6 flex gap-2 border-b border-[#e8e8f0] pb-3">{([ ["people", "Pessoas"], ["areas", "Áreas"], ["teams", "Equipes"] ] as const).map(([view, label]) => <button aria-pressed={peopleView === view} className={`rounded-xl px-4 py-2.5 text-sm font-bold ${peopleView === view ? "bg-[#f0efff] text-[#5556d8]" : "text-[#777a91] hover:bg-white"}`} key={view} onClick={() => { setPeopleView(view); if (view !== "people") { setShowAccountForm(false); setEditingAccountId(null); } }} type="button">{label}</button>)}</div>}
 
-      {section === "people" && peopleView === "organization" && <div className="mt-6 space-y-6">
-        <div className="grid gap-5 xl:grid-cols-2">
-          <form className="content-panel space-y-4" onSubmit={createDepartment}>
-            <div><p className="eyebrow">Estrutura organizacional</p><h2 className="mt-1 text-lg font-extrabold">Criar área</h2><p className="mt-1 text-sm text-[#85879a]">Uma pessoa pode participar de mais de uma área.</p></div>
-            <label className="block"><span className="mb-1.5 block text-xs font-bold text-[#55576d]">Nome da área</span><input required maxLength={100} className="w-full rounded-xl border border-[#e3e3ed] px-4 py-3 text-sm" value={departmentDraft.name} onChange={(event) => setDepartmentDraft((current) => ({ ...current, name: event.target.value }))} placeholder="Ex.: Design" /></label>
-            <label className="block"><span className="mb-1.5 block text-xs font-bold text-[#55576d]">Descrição</span><input maxLength={300} className="w-full rounded-xl border border-[#e3e3ed] px-4 py-3 text-sm" value={departmentDraft.description} onChange={(event) => setDepartmentDraft((current) => ({ ...current, description: event.target.value }))} placeholder="Responsabilidades desta área" /></label>
-            <button className="button-primary h-11 px-4" disabled={savingOrganization} type="submit">Criar área</button>
-          </form>
-          <form className="content-panel space-y-4" onSubmit={createTeam}>
+      {section === "people" && peopleView !== "people" && <div className="mt-6 space-y-6">
+        <div className="grid gap-5">
+          {peopleView === "areas" && <form className="content-panel" onSubmit={createDepartment}>
+            <h2 className="text-lg font-extrabold">Criar área</h2>
+            <div className="mt-4 flex flex-col gap-3 md:flex-row md:items-end">
+              <label className="block min-w-0 flex-1"><span className="mb-1.5 block text-xs font-bold text-[#55576d]">Nome da área</span><input required maxLength={100} className="w-full rounded-xl border border-[#e3e3ed] px-4 py-3 text-sm" value={departmentDraft.name} onChange={(event) => setDepartmentDraft((current) => ({ ...current, name: event.target.value }))} placeholder="Ex.: Design" /></label>
+              <label className="block min-w-0 flex-[2]"><span className="mb-1.5 block text-xs font-bold text-[#55576d]">Descrição</span><textarea ref={departmentDescriptionRef} maxLength={300} rows={1} className="min-h-11 w-full resize-none overflow-hidden rounded-xl border border-[#e3e3ed] px-4 py-3 text-sm" value={departmentDraft.description} onChange={(event) => setDepartmentDraft((current) => ({ ...current, description: event.target.value }))} placeholder="Responsabilidades desta área" /></label>
+              <button className="button-primary h-11 shrink-0 px-4" disabled={savingOrganization} type="submit">Criar área</button>
+            </div>
+          </form>}
+          {peopleView === "teams" && <form className="content-panel" onSubmit={createTeam}>
             <div><p className="eyebrow">Grupos de trabalho</p><h2 className="mt-1 text-lg font-extrabold">Criar equipe</h2><p className="mt-1 text-sm text-[#85879a]">Equipes são independentes das áreas e podem reunir pessoas de áreas diferentes.</p></div>
-            <label className="block"><span className="mb-1.5 block text-xs font-bold text-[#55576d]">Nome da equipe</span><input required maxLength={120} className="w-full rounded-xl border border-[#e3e3ed] px-4 py-3 text-sm" value={teamDraft.name} onChange={(event) => setTeamDraft((current) => ({ ...current, name: event.target.value }))} placeholder="Ex.: Plataforma" /></label>
-            <label className="block"><span className="mb-1.5 block text-xs font-bold text-[#55576d]">Descrição</span><input maxLength={300} className="w-full rounded-xl border border-[#e3e3ed] px-4 py-3 text-sm" value={teamDraft.description} onChange={(event) => setTeamDraft((current) => ({ ...current, description: event.target.value }))} placeholder="Objetivo ou foco da equipe" /></label>
-            <label className="block"><span className="mb-1.5 block text-xs font-bold text-[#55576d]">Equipe superior (opcional)</span><select className="w-full rounded-xl border border-[#e3e3ed] bg-white px-3 py-2.5 text-sm" value={teamDraft.parentTeamId} onChange={(event) => setTeamDraft((current) => ({ ...current, parentTeamId: event.target.value }))}><option value="">Equipe principal</option>{teamRows.map(({ team, depth }) => <option key={team.id} value={team.id}>{`${"　".repeat(depth)}${depth ? "↳ " : ""}${team.name}`}</option>)}</select></label>
-            <TeamPeoplePicker title="Pessoas da equipe" people={accounts.filter((person) => person.isActive)} selectedIds={teamDraft.memberIds} onToggle={(id) => toggleTeamDraftMember(id, false)} />
-            <TeamPeoplePicker title="Líderes da equipe" people={accounts.filter((person) => person.isActive)} selectedIds={teamDraft.leaderIds} onToggle={(id) => toggleTeamDraftLeader(id, false)} helper="Marcar uma pessoa líder também a adiciona à equipe." />
-            <button className="button-primary h-11 px-4" disabled={savingOrganization} type="submit">Criar equipe</button>
-          </form>
+            <div className="mt-4 grid gap-3 md:grid-cols-2 xl:grid-cols-3">
+              <label className="block min-w-0"><span className="mb-1.5 block text-xs font-bold text-[#55576d]">Nome da equipe</span><input required maxLength={120} className="w-full rounded-xl border border-[#e3e3ed] px-4 py-3 text-sm" value={teamDraft.name} onChange={(event) => setTeamDraft((current) => ({ ...current, name: event.target.value }))} placeholder="Ex.: Plataforma" /></label>
+              <label className="block min-w-0"><span className="mb-1.5 block text-xs font-bold text-[#55576d]">Descrição</span><input maxLength={300} className="w-full rounded-xl border border-[#e3e3ed] px-4 py-3 text-sm" value={teamDraft.description} onChange={(event) => setTeamDraft((current) => ({ ...current, description: event.target.value }))} placeholder="Objetivo ou foco da equipe" /></label>
+              <TeamParentPicker teams={teamRows} value={teamDraft.parentTeamId} onChange={(parentTeamId) => setTeamDraft((current) => ({ ...current, parentTeamId }))} />
+            </div>
+            <div className="mt-4 grid gap-3 md:grid-cols-2">
+              <TeamPeoplePicker title="Pessoas da equipe" people={accounts.filter((person) => person.isActive)} selectedIds={teamDraft.memberIds} onToggle={(id) => toggleTeamDraftMember(id, false)} />
+              <TeamPeoplePicker title="Líderes da equipe" people={accounts.filter((person) => person.isActive)} selectedIds={teamDraft.leaderIds} onToggle={(id) => toggleTeamDraftLeader(id, false)} />
+            </div>
+            <div className="mt-4 flex justify-end"><button className="button-primary h-11 px-4" disabled={savingOrganization} type="submit">Criar equipe</button></div>
+          </form>}
         </div>
 
-        <div className="grid gap-5 xl:grid-cols-2">
-          <section className="content-panel"><div><p className="eyebrow">Cadastro</p><h2 className="mt-1 text-lg font-extrabold">Áreas da empresa <span className="text-sm font-semibold text-[#85879a]">({departments.length})</span></h2></div>
-            <div className="mt-4 space-y-3">{departments.map((department) => {
+        <div className="grid gap-5">
+          {peopleView === "areas" && <section className="content-panel"><div><h2 className="text-lg font-extrabold">Áreas da empresa <span className="text-sm font-semibold text-[#85879a]">({departments.length})</span></h2></div>
+            <div className="mt-4 grid gap-3 md:grid-cols-2">{departments.map((department) => {
               const members = accounts.filter((account) => account.departmentIds.includes(department.id));
               return <article className="rounded-xl border border-[#ededf3] bg-white p-4" key={department.id}>
                 {editingDepartmentId === department.id ? <form className="space-y-3" onSubmit={updateDepartment}><input required maxLength={100} aria-label="Nome da área" className="w-full rounded-lg border border-[#e3e3ed] px-3 py-2 text-sm" value={editOrganizationDraft.name} onChange={(event) => setEditOrganizationDraft((current) => ({ ...current, name: event.target.value }))} /><input maxLength={300} aria-label="Descrição da área" className="w-full rounded-lg border border-[#e3e3ed] px-3 py-2 text-sm" value={editOrganizationDraft.description} onChange={(event) => setEditOrganizationDraft((current) => ({ ...current, description: event.target.value }))} /><div className="flex gap-2"><button className="button-primary h-9 px-3 text-xs" disabled={savingOrganization} type="submit">Salvar</button><button className="rounded-lg border px-3 text-xs" onClick={() => setEditingDepartmentId(null)} type="button">Cancelar</button></div></form> : <><div className="flex items-start justify-between gap-3"><div><h3 className="font-extrabold text-[#303249]">{department.name}</h3><p className="mt-1 text-xs text-[#85879a]">{department.description || "Sem descrição"}</p></div><div className="flex shrink-0 items-center gap-2"><span className="rounded-full bg-[#f3f3f8] px-2.5 py-1 text-[10px] font-bold text-[#777a91]">{members.length} {members.length === 1 ? "pessoa" : "pessoas"}</span><button className="text-xs font-bold text-[#5556d8]" onClick={() => { setEditingDepartmentId(department.id); setEditOrganizationDraft({ name: department.name, description: department.description ?? "" }); }} type="button">Editar</button></div></div><p className="mt-3 border-t border-[#eeeeF4] pt-3 text-xs text-[#777a91]">{members.length ? members.map(({ name }) => name).join(" · ") : "Ainda sem pessoas associadas."}</p></>}
               </article>;
             })}</div>
-          </section>
-          <section className="content-panel"><div><p className="eyebrow">Grupos de trabalho</p><h2 className="mt-1 text-lg font-extrabold">Equipes <span className="text-sm font-semibold text-[#85879a]">({teams.length})</span></h2></div>
+          </section>}
+          {peopleView === "teams" && <section className="content-panel"><div><p className="eyebrow">Grupos de trabalho</p><h2 className="mt-1 text-lg font-extrabold">Equipes <span className="text-sm font-semibold text-[#85879a]">({teams.length})</span></h2></div>
             <div className="mt-4 space-y-3">{teamRows.map(({ team, depth }) => {
               const members = accounts.filter((account) => account.teamIds.includes(team.id));
               const invalidParentIds = getDescendantTeamIds(teams, team.id);
@@ -863,49 +887,48 @@ function HrPlansView({ section }: { section: "people" | "plans" }) {
                 {editingTeamId === team.id ? <form className="space-y-3" onSubmit={updateTeam}>
                   <input required maxLength={120} aria-label="Nome da equipe" className="w-full rounded-lg border border-[#e3e3ed] px-3 py-2 text-sm" value={editTeamDraft.name} onChange={(event) => setEditTeamDraft((current) => ({ ...current, name: event.target.value }))} />
                   <input maxLength={300} aria-label="Descrição da equipe" className="w-full rounded-lg border border-[#e3e3ed] px-3 py-2 text-sm" value={editTeamDraft.description} onChange={(event) => setEditTeamDraft((current) => ({ ...current, description: event.target.value }))} />
-                  <label className="block text-xs font-bold text-[#55576d]">Equipe superior<select className="mt-1.5 w-full rounded-lg border border-[#e3e3ed] bg-white px-3 py-2 text-sm font-normal" value={editTeamDraft.parentTeamId} onChange={(event) => setEditTeamDraft((current) => ({ ...current, parentTeamId: event.target.value }))}><option value="">Equipe principal</option>{teamRows.filter(({ team: option }) => !invalidParentIds.has(option.id)).map(({ team: option, depth: optionDepth }) => <option key={option.id} value={option.id}>{`${"　".repeat(optionDepth)}${optionDepth ? "↳ " : ""}${option.name}`}</option>)}</select></label>
+                  <TeamParentPicker teams={teamRows} value={editTeamDraft.parentTeamId} excludedIds={invalidParentIds} onChange={(parentTeamId) => setEditTeamDraft((current) => ({ ...current, parentTeamId }))} />
                   <TeamPeoplePicker title="Pessoas da equipe" people={accounts.filter((person) => person.isActive)} selectedIds={editTeamDraft.memberIds} onToggle={(id) => toggleTeamDraftMember(id, true)} />
-                  <TeamPeoplePicker title="Líderes da equipe" people={accounts.filter((person) => person.isActive)} selectedIds={editTeamDraft.leaderIds} onToggle={(id) => toggleTeamDraftLeader(id, true)} helper="Marcar uma pessoa líder também a adiciona à equipe." />
+                  <TeamPeoplePicker title="Líderes da equipe" people={accounts.filter((person) => person.isActive)} selectedIds={editTeamDraft.leaderIds} onToggle={(id) => toggleTeamDraftLeader(id, true)} />
                   <div className="flex gap-2"><button className="button-primary h-9 px-3 text-xs" disabled={savingOrganization} type="submit">Salvar</button><button className="rounded-lg border px-3 text-xs" onClick={() => setEditingTeamId(null)} type="button">Cancelar</button></div>
                 </form> : <><div className="flex items-start justify-between gap-3"><div><div className="flex flex-wrap items-center gap-2"><h3 className="font-extrabold text-[#303249]">{team.name}</h3>{team.parentTeamName && <span className="rounded-full bg-[#f3f3f8] px-2 py-1 text-[10px] font-semibold text-[#777a91]">Subequipe de {team.parentTeamName}</span>}</div><p className="mt-1 text-xs text-[#85879a]">{team.description || "Sem descrição"}</p></div><div className="flex shrink-0 items-center gap-2"><span className="rounded-full bg-[#f3f3f8] px-2.5 py-1 text-[10px] font-bold text-[#777a91]">{members.length} {members.length === 1 ? "pessoa" : "pessoas"}</span><button className="text-xs font-bold text-[#5556d8]" onClick={() => { setEditingTeamId(team.id); setEditTeamDraft({ name: team.name, description: team.description ?? "", parentTeamId: String(team.parentTeamId ?? ""), memberIds: team.memberIds, leaderIds: team.leaderIds }); }} type="button">Editar</button></div></div>
                   {team.leaders.length > 0 && <p className="mt-3 text-xs text-[#777a91]">Líderes: <strong className="text-[#45475d]">{team.leaders.join(" · ")}</strong></p>}
                   <div className="mt-3 border-t border-[#eeeeF4] pt-3">{members.length ? <div className="flex flex-wrap gap-2">{members.map((person) => <span className={`inline-flex items-center gap-2 rounded-full py-1 pl-1 pr-2.5 text-[10px] font-semibold ${team.leaderIds.includes(person.id) ? "bg-[#eeedff] text-[#5556d8]" : "bg-[#f5f5f9] text-[#66687d]"}`} key={person.id}>{team.leaderIds.includes(person.id) && "★"}<EmployeeAvatar employeeId={person.id} name={person.name} className="grid size-7 place-items-center rounded-full bg-[#e9e8ff] text-[9px] font-extrabold text-[#5859d6]" />{person.name} · {person.departments.join(", ") || "Sem área"}</span>)}</div> : <p className="text-xs text-[#777a91]">Ainda sem pessoas associadas.</p>}</div></>}
               </article>;
             })}</div>
-          </section>
+          </section>}
         </div>
       </div>}
 
       {section === "people" && peopleView === "people" && showAccountForm && <form className="content-panel mt-6" onSubmit={saveAccount}>
         <div className="flex flex-wrap items-start justify-between gap-3"><div><p className="eyebrow">{editingAccountId ? "Editar pessoa" : "Nova pessoa"}</p><h2 className="mt-1 text-lg font-extrabold">{editingAccountId ? "Dados da conta" : "Criar conta de acesso"}</h2></div><button className="text-sm font-bold text-[#85879a]" onClick={() => { setShowAccountForm(false); setEditingAccountId(null); }} type="button">Fechar</button></div>
-        <div className="mt-5 grid gap-4 md:grid-cols-2 xl:grid-cols-3">
+        <div className="mt-5 grid gap-4 md:grid-cols-2 xl:grid-cols-2">
           <label><span className="mb-2 block text-xs font-bold text-[#55576d]">Nome completo</span><input required maxLength={160} className="w-full rounded-xl border border-[#e3e3ed] px-3 py-3 text-sm" value={accountDraft.name} onChange={(event) => setAccountDraft((current) => ({ ...current, name: event.target.value }))} /></label>
           <label><span className="mb-2 block text-xs font-bold text-[#55576d]">E-mail</span><input required type="email" maxLength={254} className="w-full rounded-xl border border-[#e3e3ed] px-3 py-3 text-sm" value={accountDraft.email} onChange={(event) => setAccountDraft((current) => ({ ...current, email: event.target.value }))} /></label>
           <label><span className="mb-2 block text-xs font-bold text-[#55576d]">Cargo</span><input maxLength={120} className="w-full rounded-xl border border-[#e3e3ed] px-3 py-3 text-sm" value={accountDraft.jobTitle} onChange={(event) => setAccountDraft((current) => ({ ...current, jobTitle: event.target.value }))} /></label>
-          <label><span className="mb-2 block text-xs font-bold text-[#55576d]">Liderança direta</span><select className="w-full rounded-xl border border-[#e3e3ed] bg-white px-3 py-3 text-sm" value={accountDraft.managerEmployeeId} onChange={(event) => setAccountDraft((current) => ({ ...current, managerEmployeeId: event.target.value, mentorEmployeeId: current.mentorEmployeeId === event.target.value ? "" : current.mentorEmployeeId }))}><option value="">Sem liderança definida</option>{accounts.filter((person) => person.isActive && person.id !== editingAccountId).map((person) => <option key={person.id} value={person.id}>{person.name}</option>)}</select></label>
-          <label><span className="mb-2 block text-xs font-bold text-[#55576d]">Pessoa mentora</span><select className="w-full rounded-xl border border-[#e3e3ed] bg-white px-3 py-3 text-sm" value={accountDraft.mentorEmployeeId} onChange={(event) => setAccountDraft((current) => ({ ...current, mentorEmployeeId: event.target.value }))}><option value="">Sem pessoa mentora definida</option>{accounts.filter((person) => person.isActive && person.id !== editingAccountId && person.id !== Number(accountDraft.managerEmployeeId)).map((person) => <option key={person.id} value={person.id}>{person.name}{person.jobTitle ? ` · ${person.jobTitle}` : ""}</option>)}</select><small className="mt-1 block text-[10px] text-[#85879a]">Escolha uma pessoa diferente da liderança direta para acompanhar a integração.</small></label>
-          <fieldset className="rounded-xl border border-[#e3e3ed] p-4"><legend className="px-1 text-xs font-bold text-[#55576d]">Áreas</legend><p className="mb-3 text-[11px] text-[#85879a]">Selecione todas as áreas desta pessoa.</p><div className="max-h-44 space-y-2 overflow-y-auto">{departments.map((department) => <label className="flex items-center gap-2 text-sm text-[#45475d]" key={department.id}><input className="size-4 accent-[#5b5ce2]" type="checkbox" checked={accountDraft.departmentIds.includes(department.id)} onChange={() => toggleDepartmentSelection(department.id)} />{department.name}</label>)}</div>{!departments.length && <button className="text-xs font-bold text-[#5556d8]" onClick={() => { setPeopleView("organization"); setShowAccountForm(false); }} type="button">Crie uma área primeiro</button>}</fieldset>
-          <fieldset className="rounded-xl border border-[#e3e3ed] p-4"><legend className="px-1 text-xs font-bold text-[#55576d]">Equipes</legend><p className="mb-3 text-[11px] text-[#85879a]">Uma equipe pode juntar pessoas de várias áreas. Sub-equipes aparecem indentadas.</p><div className="max-h-44 space-y-2 overflow-y-auto">{teamRows.map(({ team, depth }) => <label className="flex items-center gap-2 text-sm text-[#45475d]" key={team.id}><input className="size-4 accent-[#5b5ce2]" type="checkbox" checked={accountDraft.teamIds.includes(team.id)} onChange={() => toggleTeamSelection(team.id)} /><span>{`${"　".repeat(depth)}${depth ? "↳ " : ""}${team.name}`}</span></label>)}</div>{!teams.length && <button className="text-xs font-bold text-[#5556d8]" onClick={() => { setPeopleView("organization"); setShowAccountForm(false); }} type="button">Crie uma equipe primeiro</button>}</fieldset>
-          {!editingAccountId && <label><span className="mb-2 block text-xs font-bold text-[#55576d]">Senha inicial</span><input required minLength={8} type="password" autoComplete="new-password" className="w-full rounded-xl border border-[#e3e3ed] px-3 py-3 text-sm" value={accountDraft.password} onChange={(event) => setAccountDraft((current) => ({ ...current, password: event.target.value }))} /><small className="mt-1 block text-[10px] text-[#85879a]">Mínimo de 8 caracteres.</small></label>}
-          <div className="flex items-end"><button className="button-primary h-12 w-full" disabled={creatingAccount} type="submit">{creatingAccount ? "Salvando..." : editingAccountId ? "Salvar alterações" : "Criar usuário"}</button></div>
+          <label><span className="mb-2 block text-xs font-bold text-[#55576d]">Pessoa mentora</span><select className="w-full rounded-xl border border-[#e3e3ed] bg-white px-3 py-3 text-sm" value={accountDraft.mentorEmployeeId} onChange={(event) => setAccountDraft((current) => ({ ...current, mentorEmployeeId: event.target.value }))}><option value="">Sem pessoa mentora definida</option>{accounts.filter((person) => person.isActive && person.id !== editingAccountId && person.id !== Number(accountDraft.managerEmployeeId)).map((person) => <option key={person.id} value={person.id}>{person.name}{person.jobTitle ? ` · ${person.jobTitle}` : ""}</option>)}</select></label>
+          <div><label className="mb-2 block text-xs font-bold text-[#55576d]">Áreas</label>{departments.length ? <details className="group relative"><summary className="flex min-h-11 cursor-pointer list-none items-center justify-between gap-3 rounded-xl border border-[#e3e3ed] bg-white px-3 py-3 text-sm text-[#45475d] outline-none focus-visible:border-[#7778e5] [&::-webkit-details-marker]:hidden"><span className="truncate">{accountDraft.departmentIds.length ? departments.filter((department) => accountDraft.departmentIds.includes(department.id)).map((department) => department.name).join(", ") : "Selecione as áreas"}</span><span className="shrink-0 rotate-90 transition-transform group-open:-rotate-90"><Icon name="chevron" size={15} /></span></summary><div className="absolute inset-x-0 top-full z-20 mt-2 max-h-56 overflow-y-auto rounded-xl border border-[#e3e3ed] bg-white p-2 shadow-xl">{departments.map((department) => <label className="flex cursor-pointer items-center gap-2 rounded-lg px-2 py-2 text-sm text-[#45475d] hover:bg-[#f7f7fc]" key={department.id}><input className="size-4 accent-[#5b5ce2]" type="checkbox" checked={accountDraft.departmentIds.includes(department.id)} onChange={() => toggleDepartmentSelection(department.id)} />{department.name}</label>)}</div></details> : <button className="text-xs font-bold text-[#5556d8]" onClick={() => { setPeopleView("areas"); setShowAccountForm(false); }} type="button">Crie uma área primeiro</button>}</div>
+          <div><label className="mb-2 block text-xs font-bold text-[#55576d]">Equipes</label>{teams.length ? <details className="group relative"><summary className="flex min-h-11 cursor-pointer list-none items-center justify-between gap-3 rounded-xl border border-[#e3e3ed] bg-white px-3 py-3 text-sm text-[#45475d] outline-none focus-visible:border-[#7778e5] [&::-webkit-details-marker]:hidden"><span className="truncate">{accountDraft.teamIds.length ? `${accountDraft.teamIds.length} ${accountDraft.teamIds.length === 1 ? "equipe selecionada" : "equipes selecionadas"}` : "Selecione as equipes"}</span><span className="shrink-0 rotate-90 transition-transform group-open:-rotate-90"><Icon name="chevron" size={15} /></span></summary><div className="absolute inset-x-0 top-full z-20 mt-2 overflow-hidden rounded-xl border border-[#e3e3ed] bg-white shadow-xl"><label className="relative block border-b border-[#eeeeF4] p-2"><span className="absolute left-5 top-1/2 -translate-y-1/2 text-[#9698aa]"><Icon name="search" size={15} /></span><input aria-label="Buscar equipe" className="w-full rounded-lg bg-[#f7f7fb] py-2 pl-9 pr-3 text-xs outline-none focus:ring-2 focus:ring-[#e5e4fa]" placeholder="Buscar equipe" type="search" value={teamSearch} onKeyDown={(event) => { if (event.key === "Enter") event.preventDefault(); }} onChange={(event) => setTeamSearch(event.target.value)} /></label><div className="max-h-56 overflow-y-auto p-2">{visibleTeamRows.length ? visibleTeamRows.map(({ team, depth }) => <label className="flex cursor-pointer items-center gap-2 rounded-lg px-2 py-2 text-sm text-[#45475d] hover:bg-[#f7f7fc]" key={team.id}><input className="size-4 accent-[#5b5ce2]" type="checkbox" checked={accountDraft.teamIds.includes(team.id)} onChange={() => toggleTeamSelection(team.id)} /><span>{`${"　".repeat(depth)}${depth ? "↳ " : ""}${team.name}`}</span></label>) : <p className="px-2 py-3 text-xs text-[#85879a]">Nenhuma equipe encontrada.</p>}</div></div></details> : <button className="text-xs font-bold text-[#5556d8]" onClick={() => { setPeopleView("teams"); setShowAccountForm(false); }} type="button">Crie uma equipe primeiro</button>}</div>
+          {!editingAccountId && <><label><span className="mb-2 block text-xs font-bold text-[#55576d]">Senha inicial</span><input required minLength={8} type="password" autoComplete="new-password" className="w-full rounded-xl border border-[#e3e3ed] px-3 py-3 text-sm" value={accountDraft.password} onChange={(event) => setAccountDraft((current) => ({ ...current, password: event.target.value }))} /><small className="mt-1 block text-[10px] text-[#85879a]">Mínimo de 8 caracteres.</small></label><div className="flex items-end justify-end"><button className="button-primary h-12 px-5" disabled={creatingAccount} type="submit">{creatingAccount ? "Salvando..." : "Criar usuário"}</button></div></>}
         </div>
+        {editingAccountId && <div className="mt-6 flex justify-end border-t border-[#eeeeF4] pt-5"><button className="button-primary h-12 px-5" disabled={creatingAccount} type="submit">{creatingAccount ? "Salvando..." : "Salvar alterações"}</button></div>}
       </form>}
 
       {section === "people" && peopleView === "people" && <div className="content-panel mt-6">
-        <div className="flex flex-wrap items-end justify-between gap-4"><div><p className="eyebrow">Diretório</p><h2 className="mt-1 text-xl font-extrabold">Pessoas da empresa</h2><p className="mt-1 text-sm text-[#85879a]">{accounts.length} contas cadastradas · {activeAccounts.length} ativas</p></div><input aria-label="Buscar pessoa" className="w-full max-w-sm rounded-xl border border-[#e3e3ed] px-4 py-3 text-sm" placeholder="Buscar por nome, e-mail, cargo ou área" value={peopleSearch} onChange={(event) => setPeopleSearch(event.target.value)} /></div>
-        {loadingAccounts ? <p className="mt-6 text-sm text-[#85879a]">Carregando pessoas...</p> : filteredPeople.length ? <div className="mt-5 divide-y divide-[#eeeeF4]">{filteredPeople.map((person) => <article className="flex flex-wrap items-center gap-3 py-4" key={person.id}><EmployeeAvatar employeeId={person.id} name={person.name} className="grid size-11 shrink-0 place-items-center rounded-xl bg-[#f1f0ff] text-sm font-extrabold text-[#5b5ce2]" /><div className="min-w-0 flex-1"><div className="flex flex-wrap items-center gap-2"><h3 className="font-extrabold text-[#303249]">{person.name}</h3><span className={`rounded-full px-2 py-1 text-[10px] font-extrabold ${person.isActive ? "bg-emerald-50 text-emerald-700" : "bg-[#f2f2f5] text-[#85879a]"}`}>{person.isActive ? "Ativa" : "Inativa"}</span></div><p className="mt-1 text-xs text-[#777a91]">{person.email} · {person.jobTitle ?? "Cargo não informado"}</p><p className="mt-1 text-xs text-[#85879a]">Áreas: {person.departments.length ? person.departments.join(" · ") : "Sem área"} · Equipes: {person.teams.length ? person.teams.join(" · ") : "Sem equipe"}{person.managerName ? ` · Liderança: ${person.managerName}` : " · Sem liderança"}{person.mentorName ? ` · Mentor(a): ${person.mentorName}` : " · Sem mentor(a)"}</p></div><button className="rounded-lg border border-[#e6e6ef] px-3 py-2 text-xs font-bold text-[#5b5ce2]" onClick={() => openAccountForm(person)} type="button">Editar</button><button className={`rounded-lg border px-3 py-2 text-xs font-bold ${person.isActive ? "border-[#f1dada] text-[#b84f4f]" : "border-emerald-200 text-emerald-700"}`} onClick={() => void toggleAccountActive(person)} type="button">{person.isActive ? "Desativar" : "Reativar"}</button></article>)}</div> : <p className="mt-6 text-sm text-[#85879a]">Nenhuma pessoa corresponde à busca.</p>}
+        <div className="flex flex-wrap items-end justify-between gap-4"><div><p className="eyebrow">Diretório</p><h2 className="mt-1 text-xl font-extrabold">Pessoas da empresa</h2><p className="mt-1 text-sm text-[#85879a]">{accounts.length} contas cadastradas · {activeAccounts.length} ativas</p></div><input aria-label="Buscar pessoa pelo nome" className="w-full max-w-sm rounded-xl border border-[#e3e3ed] px-4 py-3 text-sm" placeholder="Buscar por nome" value={peopleSearch} onChange={(event) => setPeopleSearch(event.target.value)} /></div>
+        {loadingAccounts ? <p className="mt-6 text-sm text-[#85879a]">Carregando pessoas...</p> : filteredPeople.length ? <div className="mt-5 divide-y divide-[#eeeeF4]">{filteredPeople.map((person) => <article className="flex flex-wrap items-center gap-3 py-4" key={person.id}><EmployeeAvatar employeeId={person.id} name={person.name} className="grid size-11 shrink-0 place-items-center rounded-xl bg-[#f1f0ff] text-sm font-extrabold text-[#5b5ce2]" /><div className="min-w-0 flex-1"><div className="flex flex-wrap items-center gap-2"><h3 className="font-extrabold text-[#303249]">{person.name}</h3><span className={`rounded-full px-2 py-1 text-[10px] font-extrabold ${person.isActive ? "bg-emerald-50 text-emerald-700" : "bg-[#f2f2f5] text-[#85879a]"}`}>{person.isActive ? "Ativa" : "Inativa"}</span></div><p className="mt-1 text-xs text-[#777a91]">{person.email} · {person.jobTitle ?? "Cargo não informado"}</p><p className="mt-1 text-xs text-[#85879a]">Áreas: {person.departments.length ? person.departments.join(" · ") : "Sem área"} · Equipes: {person.teams.length ? person.teams.join(" · ") : "Sem equipe"}{person.mentorName ? ` · Mentor(a): ${person.mentorName}` : ""}</p></div><button className="rounded-lg border border-[#e6e6ef] px-3 py-2 text-xs font-bold text-[#5b5ce2]" onClick={() => openAccountForm(person)} type="button">Editar</button><button className={`rounded-lg border px-3 py-2 text-xs font-bold ${person.isActive ? "border-[#f1dada] text-[#b84f4f]" : "border-emerald-200 text-emerald-700"}`} onClick={() => void toggleAccountActive(person)} type="button">{person.isActive ? "Desativar" : "Reativar"}</button></article>)}</div> : <p className="mt-6 text-sm text-[#85879a]">Nenhuma pessoa corresponde à busca.</p>}
       </div>}
 
       {section === "plans" && <div className="mt-7 pb-24">
         <div className="content-panel">
-          <div className="flex flex-wrap items-end justify-between gap-4"><div><p className="eyebrow">Jornadas individuais</p><h2 className="mt-1 text-xl font-extrabold">Encontre uma pessoa</h2><p className="mt-1 text-sm text-[#85879a]">Pesquise pelo nome para configurar a jornada de cada pessoa.</p></div><span className="rounded-full bg-[#f0efff] px-3 py-1 text-xs font-extrabold text-[#5556d8]">{activeAccounts.length} contas ativas</span></div>
+          <div className="flex flex-wrap items-end justify-between gap-4"><h2 className="text-xl font-extrabold">Encontre uma pessoa</h2><span className="rounded-full bg-[#f0efff] px-3 py-1 text-xs font-extrabold text-[#5556d8]">{activeAccounts.length} contas ativas</span></div>
           <input aria-label="Pesquisar conta pelo nome" className="mt-5 w-full rounded-xl border border-[#e3e3ed] px-4 py-3 text-sm outline-none focus:border-[#7778e5]" placeholder="Digite o nome da pessoa" value={planSearch} onChange={(event) => { setPlanSearch(event.target.value); setSelectedAccountId(null); }} />
-          {loadingAccounts ? <p className="mt-4 text-sm text-[#85879a]">Carregando contas...</p> : planSearch.trim() ? planMatches.length ? <div className="mt-4 grid gap-3 md:grid-cols-3">{planMatches.map((account) => <button aria-pressed={selectedAccountId === account.id} className={`rounded-xl border p-4 text-left transition ${selectedAccountId === account.id ? "border-[#aaaaf0] bg-[#f4f3ff] ring-2 ring-[#e4e3ff]" : "border-[#ededf3] hover:border-[#c9c8ed] hover:bg-[#fafafe]"}`} key={account.id} onClick={() => setSelectedAccountId(account.id)} type="button"><span className="flex items-start gap-3"><span className="grid size-10 shrink-0 place-items-center rounded-xl bg-white text-[#5b5ce2] shadow-sm"><Icon name="user" size={18} /></span><span className="min-w-0"><strong className="block truncate text-sm text-[#303249]">{account.name}</strong><small className="mt-1 block truncate text-xs text-[#85879a]">{account.email}</small></span></span><span className="mt-3 block text-xs font-semibold text-[#777a91]">{account.jobTitle ?? "Cargo não informado"} · {account.department ?? "Sem área"}</span></button>)}</div> : <p className="mt-4 rounded-xl bg-[#fafafe] p-4 text-sm text-[#85879a]">Nenhuma conta ativa encontrada com esse nome.</p> : <p className="mt-4 text-sm text-[#85879a]">Os até três resultados aparecerão aqui enquanto você digita.</p>}
+        {loadingAccounts ? <p className="mt-4 text-sm text-[#85879a]">Carregando contas...</p> : planSearch.trim() ? planMatches.length ? <div className="mt-4 grid gap-3 md:grid-cols-3">{planMatches.map((account) => <button aria-pressed={selectedAccountId === account.id} className={`rounded-xl border p-4 text-left transition ${selectedAccountId === account.id ? "border-[#aaaaf0] bg-[#f4f3ff] ring-2 ring-[#e4e3ff]" : "border-[#ededf3] hover:border-[#c9c8ed] hover:bg-[#fafafe]"}`} key={account.id} onClick={() => setSelectedAccountId(account.id)} type="button"><span className="flex items-start gap-3"><EmployeeAvatar employeeId={account.id} name={account.name} className="grid size-10 shrink-0 place-items-center rounded-xl bg-white text-sm font-extrabold text-[#5b5ce2] shadow-sm" /><span className="min-w-0"><strong className="block truncate text-sm text-[#303249]">{account.name}</strong><small className="mt-1 block truncate text-xs text-[#85879a]">{account.email}</small></span></span><span className="mt-3 block text-xs font-semibold text-[#777a91]">{account.jobTitle ?? "Cargo não informado"} · {account.department ?? "Sem área"}</span></button>)}</div> : <p className="mt-4 rounded-xl bg-[#fafafe] p-4 text-sm text-[#85879a]">Nenhuma conta ativa encontrada com esse nome.</p> : null}
         </div>
 
         <section className="content-panel mt-5" aria-labelledby="task-presets-title">
           <div className="flex flex-wrap items-start justify-between gap-4">
-            <div><p className="eyebrow">Reutilize tarefas</p><h2 id="task-presets-title" className="mt-1 text-xl font-extrabold">Pacotes prontos</h2><p className="mt-1 max-w-2xl text-sm text-[#85879a]">Marque um ou mais pacotes para incluir as tarefas na jornada. Depois você pode desmarcar ou remover cada tarefa.</p></div>
+            <div><h2 id="task-presets-title" className="text-xl font-extrabold">Pacotes prontos</h2></div>
             <button className="rounded-xl border border-[#dedeea] bg-white px-4 py-3 text-sm font-extrabold text-[#5556d8]" onClick={() => { setShowPresetForm((show) => !show); setError(""); }} type="button">{showPresetForm ? "Fechar criação" : "+ Criar pacote"}</button>
           </div>
 
@@ -936,10 +959,10 @@ function HrPlansView({ section }: { section: "people" | "plans" }) {
           </form>}
 
           {taskPresets.length ? <div className="mt-5 grid gap-3 md:grid-cols-2 xl:grid-cols-3">{taskPresets.map((preset) => <label className={`flex cursor-pointer items-start gap-3 rounded-xl border p-4 transition ${selectedPresetIds.includes(preset.id) ? "border-[#b8b8f2] bg-[#f7f6ff]" : "border-[#ededf3] hover:bg-[#fafafe]"}`} key={preset.id}><input className="mt-1 size-4 accent-[#5b5ce2]" type="checkbox" checked={selectedPresetIds.includes(preset.id)} onChange={(event) => togglePreset(preset.id, event.target.checked)} /><span className="min-w-0"><strong className="block text-sm text-[#303249]">{preset.name}</strong><small className="mt-1 block text-xs text-[#85879a]">{preset.description || preset.tasks.length + (preset.tasks.length === 1 ? " tarefa" : " tarefas")}</small><span className="mt-2 flex flex-wrap gap-1">{Array.from(new Set(preset.tasks.map((task) => task.stageName))).map((stageName) => <span className="rounded-full bg-white px-2 py-1 text-[10px] font-bold text-[#777a91]" key={stageName}>{stageName}</span>)}</span></span></label>)}</div> : <p className="mt-5 rounded-xl bg-[#fafafe] p-4 text-sm text-[#85879a]">Ainda não há pacotes. Crie, por exemplo, “Contas da empresa” e “Contas de programador”.</p>}
-          <div className="mt-4 flex flex-wrap items-center justify-between gap-3"><p className="text-xs text-[#85879a]">{selectedPresetIds.length} pacotes marcados{!selectedAccount ? " · encontre uma pessoa acima para aplicá-los" : ""}</p><button className="button-primary h-11 px-5" disabled={!selectedAccount || !selectedPresetIds.length || loadingPlan} onClick={applySelectedPresets} type="button">Adicionar pacotes selecionados</button></div>
+          <div className="mt-4 flex justify-end"><button className="button-primary h-11 px-5" disabled={!selectedAccount || !selectedPresetIds.length || loadingPlan} onClick={applySelectedPresets} type="button">Adicionar pacotes selecionados</button></div>
         </section>
 
-        {selectedAccount ? <div className="mt-5 min-w-0 space-y-5">
+        {selectedAccount ? <div className="mt-5 min-w-0 scroll-mt-24 space-y-5" ref={selectedAccountPlanRef}>
           {selectedAccount && (
             <div className="content-panel flex flex-wrap items-center justify-between gap-4">
               <div className="flex min-w-0 items-center gap-3">
@@ -1042,7 +1065,43 @@ function HrPlansView({ section }: { section: "people" | "plans" }) {
   );
 }
 
-function TeamPeoplePicker({ title, people, selectedIds, onToggle, helper }: { title: string; people: Account[]; selectedIds: number[]; onToggle: (id: number) => void; helper?: string }) {
+function TeamParentPicker({ teams, value, onChange, excludedIds = new Set<number>() }: { teams: { team: Team; depth: number }[]; value: string; onChange: (value: string) => void; excludedIds?: Set<number> }) {
+  const [search, setSearch] = useState("");
+  const detailsRef = useRef<HTMLDetailsElement>(null);
+  const selectedTeam = teams.find(({ team }) => String(team.id) === value)?.team;
+  const normalizedSearch = search.trim().normalize("NFD").replace(/[\u0300-\u036f]/g, "").toLocaleLowerCase("pt-BR");
+  const matches = teams.filter(({ team }) => !excludedIds.has(team.id)
+    && team.name.normalize("NFD").replace(/[\u0300-\u036f]/g, "").toLocaleLowerCase("pt-BR").includes(normalizedSearch));
+
+  function selectParent(parentId: string) {
+    onChange(parentId);
+    setSearch("");
+    if (detailsRef.current) detailsRef.current.open = false;
+  }
+
+  return <div>
+    <label className="mb-1.5 block text-xs font-bold text-[#55576d]">A quem responde</label>
+    <details className="group relative" ref={detailsRef}>
+      <summary className="flex min-h-11 cursor-pointer list-none items-center justify-between gap-3 rounded-xl border border-[#e3e3ed] bg-white px-3 py-3 text-sm font-normal text-[#45475d] outline-none focus-visible:border-[#7778e5] [&::-webkit-details-marker]:hidden">
+        <span className="truncate">{selectedTeam?.name ?? "Equipe sem supervisor"}</span>
+        <span className="shrink-0 rotate-90 transition-transform group-open:-rotate-90"><Icon name="chevron" size={15} /></span>
+      </summary>
+      <div className="absolute inset-x-0 top-full z-30 mt-2 overflow-hidden rounded-xl border border-[#e3e3ed] bg-white shadow-xl">
+        <label className="relative block border-b border-[#eeeeF4] p-2">
+          <span className="absolute left-5 top-1/2 -translate-y-1/2 text-[#9698aa]"><Icon name="search" size={15} /></span>
+          <input aria-label="Buscar equipe a quem responde" className="w-full rounded-lg bg-[#f7f7fb] py-2 pl-9 pr-3 text-xs outline-none focus:ring-2 focus:ring-[#e5e4fa]" placeholder="Buscar equipe" type="search" value={search} onChange={(event) => setSearch(event.target.value)} onKeyDown={(event) => { if (event.key === "Enter") event.preventDefault(); if (event.key === "Escape" && detailsRef.current) detailsRef.current.open = false; }} />
+        </label>
+        <div className="max-h-56 overflow-y-auto p-2">
+          <button className={`w-full rounded-lg px-2 py-2 text-left text-sm hover:bg-[#f7f7fc] ${!value ? "font-bold text-[#5556d8]" : "text-[#45475d]"}`} onClick={() => selectParent("")} type="button">Equipe sem supervisor</button>
+          {matches.map(({ team, depth }) => <button className={`flex w-full items-center gap-2 rounded-lg px-2 py-2 text-left text-sm hover:bg-[#f7f7fc] ${value === String(team.id) ? "font-bold text-[#5556d8]" : "text-[#45475d]"}`} key={team.id} onClick={() => selectParent(String(team.id))} type="button"><span className="shrink-0 text-[#a0a2b4]">{depth ? "↳" : ""}</span><span className="truncate" style={{ paddingLeft: `${Math.min(depth, 4) * 12}px` }}>{team.name}</span></button>)}
+          {matches.length === 0 && <p className="px-2 py-3 text-xs text-[#85879a]">Nenhuma equipe encontrada.</p>}
+        </div>
+      </div>
+    </details>
+  </div>;
+}
+
+function TeamPeoplePicker({ title, people, selectedIds, onToggle }: { title: string; people: Account[]; selectedIds: number[]; onToggle: (id: number) => void }) {
   const [search, setSearch] = useState("");
   const normalizedSearch = search.trim().normalize("NFD").replace(/[\u0300-\u036f]/g, "").toLocaleLowerCase("pt-BR");
   const matches = normalizedSearch.length >= 2
@@ -1051,15 +1110,14 @@ function TeamPeoplePicker({ title, people, selectedIds, onToggle, helper }: { ti
     : [];
   const selectedPeople = people.filter((person) => selectedIds.includes(person.id));
 
-  return <details className="rounded-xl border border-[#e3e3ed] bg-white p-3">
-    <summary className="cursor-pointer list-none text-sm font-bold text-[#45475d]">{title}<span className="ml-2 rounded-full bg-[#f0efff] px-2 py-0.5 text-[10px] font-extrabold text-[#5556d8]">{selectedIds.length} selecionadas</span></summary>
-    {helper && <p className="mt-2 text-[11px] text-[#85879a]">{helper}</p>}
+  return <section className="rounded-xl border border-[#e3e3ed] bg-white p-3">
+    <div className="text-sm font-bold text-[#45475d]">{title}<span className="ml-2 rounded-full bg-[#f0efff] px-2 py-0.5 text-[10px] font-extrabold text-[#5556d8]">{selectedIds.length} selecionadas</span></div>
     <label className="mt-3 block"><span className="sr-only">Buscar pessoa por nome, e-mail, cargo ou área</span><span className="relative block"><span className="absolute left-3 top-1/2 -translate-y-1/2 text-[#9698aa]"><Icon name="search" size={16} /></span><input className="w-full rounded-lg border border-[#e3e3ed] bg-white py-2 pl-9 pr-3 text-xs outline-none focus:border-[#b8b8ec]" type="search" value={search} onChange={(event) => setSearch(event.target.value)} placeholder="Buscar nome, e-mail, cargo ou área..." /></span></label>
     <div className="mt-3 space-y-3">
       {selectedPeople.length > 0 && <div><p className="mb-1.5 text-[10px] font-extrabold uppercase tracking-wide text-[#85879a]">Selecionadas</p><div className="flex max-h-24 flex-wrap gap-1.5 overflow-y-auto">{selectedPeople.map((person) => <button className="inline-flex max-w-full items-center gap-1.5 rounded-full bg-[#f0efff] py-1 pl-1 pr-2 text-[10px] font-bold text-[#5556d8] hover:bg-[#e7e6ff]" key={person.id} onClick={() => onToggle(person.id)} type="button" title={`Remover ${person.name}`}><EmployeeAvatar employeeId={person.id} name={person.name} className="grid size-6 shrink-0 place-items-center rounded-full bg-white text-[8px] font-extrabold text-[#5b5ce2]" /><span className="truncate">{person.name}</span><span aria-hidden="true">×</span></button>)}</div></div>}
       <div className="max-h-56 space-y-1 overflow-y-auto">
         {!people.length ? <p className="px-2 py-2 text-xs text-[#85879a]">Nenhuma pessoa ativa cadastrada.</p>
-          : normalizedSearch.length < 2 ? <p className="px-2 py-3 text-xs text-[#85879a]">Digite pelo menos 2 caracteres para buscar entre {people.length} pessoas.</p>
+          : normalizedSearch.length < 2 ? null
             : matches.length ? matches.map((person) => <label className="flex cursor-pointer items-start gap-2 rounded-lg px-2 py-2 hover:bg-[#fafafe]" key={person.id}>
               <input className="mt-0.5 size-4 accent-[#5b5ce2]" type="checkbox" checked={selectedIds.includes(person.id)} onChange={() => onToggle(person.id)} />
               <EmployeeAvatar employeeId={person.id} name={person.name} className="grid size-9 shrink-0 place-items-center rounded-full bg-[#f1f0ff] text-[10px] font-extrabold text-[#5b5ce2]" />
@@ -1067,7 +1125,7 @@ function TeamPeoplePicker({ title, people, selectedIds, onToggle, helper }: { ti
             </label>) : <p className="px-2 py-3 text-xs text-[#85879a]">Nenhuma pessoa encontrada para “{search}”.</p>}
       </div>
     </div>
-  </details>;
+  </section>;
 }
 
 export default HrPlansView;

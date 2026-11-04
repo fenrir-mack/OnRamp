@@ -40,12 +40,6 @@ function ContentView({ query, setQuery, resources, filtered, status }: { query: 
         <div className="library-page__count"><Icon name="book" size={18} /><span><strong>{resources.length}</strong> materiais disponíveis</span></div>
       </header>
 
-      <div className="library-search">
-        <Icon name="search" size={21} />
-        <input aria-label="Buscar conteúdos" value={query} onChange={(event) => setQuery(event.target.value)} placeholder="Busque por título, assunto ou palavra-chave" />
-        {query && <button className="library-search__clear" onClick={() => setQuery("")} type="button">Limpar</button>}
-      </div>
-
       <section className="library-section" aria-labelledby="library-topics-title">
         <div className="library-section__heading">
           <div><p className="eyebrow">Navegue pela biblioteca</p><h2 id="library-topics-title">Explore por assunto</h2></div>

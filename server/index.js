@@ -965,6 +965,12 @@ function parseAccountId(value) {
   return Number.isSafeInteger(accountId) && accountId > 0 ? accountId : null;
 }
 
+function isValidDateOnly(value) {
+  if (typeof value !== "string" || !/^\d{4}-\d{2}-\d{2}$/.test(value)) return false;
+  const date = new Date(`${value}T00:00:00Z`);
+  return !Number.isNaN(date.valueOf()) && date.toISOString().slice(0, 10) === value;
+}
+
 async function getUnreadSupportMessageCount(employeeId, isHrAdmin) {
   const result = await pool.query(`
     SELECT COUNT(message.employee_plan_task_issue_message_id)::int AS count
@@ -1119,7 +1125,7 @@ function validatePlanTasks(tasks) {
     if (typeof task.ownerRole !== "string" || !task.ownerRole.trim() || task.ownerRole.trim().length > 120) return "Informe a pessoa responsável.";
     if (!Number.isSafeInteger(Number(task.ownerEmployeeId)) || Number(task.ownerEmployeeId) <= 0) return "Selecione uma pessoa responsável para cada tarefa.";
     if (!validTypes.has(task.taskType)) return "O tipo de tarefa é inválido.";
-    if (!Number.isSafeInteger(Number(task.dueOffsetDays)) || Number(task.dueOffsetDays) < 0 || Number(task.dueOffsetDays) > 32767) return "O prazo deve ser um número de dias entre 0 e 32.767.";
+    if (!Number.isSafeInteger(Number(task.dueOffsetDays)) || Number(task.dueOffsetDays) < -32768 || Number(task.dueOffsetDays) > 32767) return "O prazo deve ser um número de dias entre -32.768 e 32.767.";
     if (typeof task.required !== "boolean") return "Informe se a tarefa é obrigatória.";
   }
   return null;
@@ -1260,13 +1266,14 @@ app.get("/api/hr/accounts", requireHr, async (_request, response) => {
         employee.manager_employee_id AS "managerEmployeeId",
         manager.full_name AS "managerName", employee.is_active AS "isActive",
         onboarding.mentor_employee_id AS "mentorEmployeeId",
+        onboarding.start_date AS "startDate",
         mentor.full_name AS "mentorName",
         (SELECT COUNT(*)::int FROM public.employee_plan_tasks AS plan_task
           WHERE plan_task.employee_id = employee.employee_id) AS "planTaskCount"
       FROM public.employees AS employee
       LEFT JOIN public.employees AS manager ON manager.employee_id = employee.manager_employee_id
       LEFT JOIN LATERAL (
-        SELECT onboarding.mentor_employee_id
+        SELECT onboarding.mentor_employee_id, onboarding.start_date
         FROM public.onboardings AS onboarding
         WHERE onboarding.employee_id = employee.employee_id AND onboarding.status = 'active'
         ORDER BY onboarding.updated_at DESC, onboarding.onboarding_id DESC
@@ -2348,7 +2355,15 @@ app.get("/api/stages", requireAuthenticated, async (_request, response) => {
 
 app.get("/api/organization", requireAuthenticated, async (_request, response) => {
   try {
-    const [departmentResult, teamResult] = await Promise.all([
+    const [employeeResult, departmentResult, teamResult] = await Promise.all([
+      pool.query(`
+        SELECT employee.employee_id AS id, employee.full_name AS name, employee.email,
+          employee.job_title AS "jobTitle", department.name AS department
+        FROM public.employees AS employee
+        LEFT JOIN public.departments AS department ON department.department_id = employee.department_id
+        WHERE employee.is_active IS TRUE AND employee.is_hr_admin IS FALSE
+        ORDER BY employee.full_name;
+      `),
       pool.query(`
         SELECT department.department_id AS id, department.name, department.description,
           COALESCE((
@@ -2387,7 +2402,7 @@ app.get("/api/organization", requireAuthenticated, async (_request, response) =>
         ORDER BY parent.name NULLS FIRST, team.name;
       `),
     ]);
-    return response.json({ departments: departmentResult.rows, teams: teamResult.rows });
+    return response.json({ employees: employeeResult.rows, departments: departmentResult.rows, teams: teamResult.rows });
   } catch (error) {
     console.error("Could not load company directory:", error.message);
     return response.status(500).json({ error: "Não foi possível carregar as pessoas e áreas da empresa." });
