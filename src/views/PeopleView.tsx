@@ -4,12 +4,13 @@ import { Icon, type IconName } from "../components/shared";
 import EmployeeAvatar from "../components/EmployeeAvatar";
 import ProfileView from "./ProfileView";
 
-type DirectoryPerson = { id: number; name: string; email: string; jobTitle: string | null; isLeader?: boolean };
+type DirectoryPerson = { id: number; name: string; email: string; jobTitle: string | null; department?: string | null; isLeader?: boolean };
+type NewHire = DirectoryPerson & { startDate: string };
 type Department = { id: number; name: string; description: string | null; members: DirectoryPerson[] };
 type Team = { id: number; name: string; description: string | null; parentTeamId: number | null; parentTeamName: string | null; members: DirectoryPerson[]; leaders: DirectoryPerson[] };
 type TeamNode = { team: Team; children: TeamNode[] };
 type Directory = { departments: Department[]; teams: Team[] };
-type View = "areas" | "times" | "organograma";
+type View = "areas" | "times" | "organograma" | "novas-pessoas";
 
 function buildTeamTree(teams: Team[]): TeamNode[] {
   const children = new Map<number | null, Team[]>();
@@ -40,7 +41,9 @@ function PeopleView({ resetVersion }: { resetVersion: number }) {
   const [selectedDepartment, setSelectedDepartment] = useState<Department | null>(null);
   const [selectedPerson, setSelectedPerson] = useState<{ person: DirectoryPerson; departmentName?: string } | null>(null);
   const [directory, setDirectory] = useState<Directory>({ departments: [], teams: [] });
+  const [newHires, setNewHires] = useState<NewHire[]>([]);
   const [status, setStatus] = useState<"loading" | "ready" | "error">("loading");
+  const [newHiresStatus, setNewHiresStatus] = useState<"loading" | "ready" | "error">("loading");
   useEffect(() => {
     const controller = new AbortController();
     fetch("/api/organization", { signal: controller.signal })
@@ -51,6 +54,14 @@ function PeopleView({ resetVersion }: { resetVersion: number }) {
       })
       .then((result) => { setDirectory(result); setStatus("ready"); })
       .catch((error: unknown) => { if (!(error instanceof DOMException && error.name === "AbortError")) setStatus("error"); });
+    fetch("/api/people/new", { signal: controller.signal })
+      .then(async (response) => {
+        const result = await response.json();
+        if (!response.ok) throw new Error(result.error ?? "Não foi possível carregar novos perfis.");
+        return result as NewHire[];
+      })
+      .then((result) => { setNewHires(result); setNewHiresStatus("ready"); })
+      .catch((error: unknown) => { if (!(error instanceof DOMException && error.name === "AbortError")) setNewHiresStatus("error"); });
     return () => controller.abort();
   }, []);
 
@@ -66,12 +77,13 @@ function PeopleView({ resetVersion }: { resetVersion: number }) {
     { id: "areas", label: "Áreas", icon: "grid" },
     { id: "times", label: "Equipes", icon: "people" },
     { id: "organograma", label: "Estrutura de equipes", icon: "briefcase" },
+    { id: "novas-pessoas", label: "Novas pessoas", icon: "sparkle" },
   ];
   const empty = status === "loading" ? "Carregando dados da empresa..." : status === "error" ? "Não foi possível carregar o diretório. Atualize a página para tentar novamente." : "O RH ainda não cadastrou itens nesta seção.";
 
   const openPerson = (person: DirectoryPerson, departmentName?: string) => {
     const areaNames = directory.departments.filter((department) => department.members.some((member) => member.id === person.id)).map((department) => department.name);
-    setSelectedPerson({ person, departmentName: departmentName ?? areaNames.join(", ") });
+    setSelectedPerson({ person, departmentName: departmentName ?? (areaNames.join(", ") || person.department || "") });
   };
 
   if (selectedPerson) return <section className="people-directory">
@@ -107,6 +119,11 @@ function PeopleView({ resetVersion }: { resetVersion: number }) {
     {view === "organograma" && <div className="org-chart mt-6"><div className="org-chart__heading"><div><h2>Organograma de equipes</h2><p>Equipes superiores aparecem acima das equipes subordinadas.</p></div><span className="org-chart__count">{directory.teams.length} {directory.teams.length === 1 ? "equipe" : "equipes"}</span></div>
       {teamTree.length ? <div className="org-chart__forest">{teamTree.map((node) => <OrgTeamNode key={node.team.id} node={node} onPersonClick={openPerson} />)}</div> : <EmptyState text={empty} />}
     </div>}
+
+    {view === "novas-pessoas" && <div className="mt-6">
+      <div className="mb-5"><p className="eyebrow">Chegaram recentemente</p><h2 className="mt-1 text-xl font-extrabold">Conheça as novas pessoas</h2><p className="mt-1 text-sm text-[#777a91]">Abra um perfil para saber mais e iniciar uma conversa pelo Teams.</p></div>
+      {newHiresStatus === "loading" ? <EmptyState text="Carregando novos perfis..." /> : newHiresStatus === "error" ? <EmptyState text="Não foi possível carregar os novos perfis. Atualize a página para tentar novamente." /> : newHires.length ? <div className="grid gap-4 sm:grid-cols-2 xl:grid-cols-3">{newHires.map((person) => <button className="content-panel flex items-center gap-4 text-left transition hover:-translate-y-0.5 hover:border-[#c8c7ef] hover:shadow-md" key={person.id} onClick={() => openPerson(person, person.department ?? undefined)} type="button"><EmployeeAvatar employeeId={person.id} name={person.name} className="grid size-14 shrink-0 place-items-center rounded-2xl bg-[#f1f0ff] text-base font-extrabold text-[#5b5ce2]" /><span className="min-w-0 flex-1"><strong className="block truncate text-sm text-[#303249]">{person.name}</strong><span className="mt-1 block truncate text-xs text-[#777a91]">{person.jobTitle || "Cargo não informado"}{person.department ? ` · ${person.department}` : ""}</span><span className="mt-2 block text-[11px] font-semibold text-[#7779db]">Na equipe desde {formatStartDate(person.startDate)}</span></span><Icon name="chevron" size={16} /></button>)}</div> : <EmptyState text="Não há novas pessoas para apresentar neste momento." />}
+    </div>}
   </section>;
 }
 
@@ -131,5 +148,10 @@ function PersonRow({ person, compact = false, onClick }: { person: DirectoryPers
 }
 
 function EmptyState({ text }: { text: string }) { return <div className="mt-6 rounded-2xl border border-dashed border-[#d9d9e6] bg-white p-8 text-center text-sm text-[#777a91]">{text}</div>; }
+
+function formatStartDate(value: string) {
+  const date = new Date(`${value.slice(0, 10)}T00:00:00`);
+  return Number.isNaN(date.getTime()) ? "recentemente" : new Intl.DateTimeFormat("pt-BR", { day: "numeric", month: "long" }).format(date);
+}
 
 export default PeopleView;

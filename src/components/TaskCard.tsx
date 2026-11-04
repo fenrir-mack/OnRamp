@@ -16,6 +16,7 @@ type TaskCardProps = {
   statusLabel?: string;
   onReport: () => void;
   onResolve?: () => void;
+  resolveLabel?: string;
 };
 
 const statusDetails: Record<TaskStatus, { modifier: string; icon: IconName }> = {
@@ -25,7 +26,7 @@ const statusDetails: Record<TaskStatus, { modifier: string; icon: IconName }> = 
   "Resolvido": { modifier: "resolvido", icon: "check" },
 };
 
-function TaskCard({ title, detail, category, owner, ownerEmployeeId, onOwnerClick, icon, status, statusLabel, required, onReport, onResolve }: TaskCardProps) {
+function TaskCard({ title, detail, category, owner, ownerEmployeeId, onOwnerClick, icon, status, statusLabel, required, onReport, onResolve, resolveLabel = "Resolver" }: TaskCardProps) {
   const currentStatus = statusDetails[status];
   const label = statusLabel ?? status;
 
@@ -52,7 +53,7 @@ function TaskCard({ title, detail, category, owner, ownerEmployeeId, onOwnerClic
       </span>
       <div className="task-card__actions">
         <button className="task-card__report" onClick={onReport} type="button">Informar problema</button>
-        {onResolve && <button className="task-card__resolve" onClick={onResolve} type="button"><Icon name="check" size={13} /> Resolver</button>}
+        {onResolve && <button className="task-card__resolve" onClick={onResolve} type="button"><Icon name={resolveLabel === "Responder" ? "chat" : "check"} size={13} /> {resolveLabel}</button>}
       </div>
     </article>
   );

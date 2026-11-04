@@ -1,5 +1,5 @@
 import "../styles/dashboard.css";
-import { useEffect, useMemo, useState } from "react";
+import { useCallback, useEffect, useMemo, useState } from "react";
 import { Brand, Icon, type IconName, type LibraryResource } from "./shared";
 import HomeView from "../views/HomeView";
 import ContentView from "../views/ContentView";
@@ -8,6 +8,9 @@ import PeopleView from "../views/PeopleView";
 import HrPlansView from "../views/HrPlansView";
 import ProfileView from "../views/ProfileView";
 import MessagesView from "../views/MessagesView";
+import OverdueTasksView from "../views/OverdueTasksView";
+import SupportRequestView from "../views/SupportRequestView";
+import OnboardingSupportView from "../views/OnboardingSupportView";
 import type { AuthenticatedEmployee } from "./Login";
 
 function Dashboard({ employee, onLogout }: { employee: AuthenticatedEmployee; onLogout: () => void }) {
@@ -15,13 +18,26 @@ function Dashboard({ employee, onLogout }: { employee: AuthenticatedEmployee; on
   const [activeNav, setActiveNav] = useState(employee.isHrAdmin ? "Pessoas da empresa" : "Início");
   const [profilePhoto, setProfilePhoto] = useState(() => localStorage.getItem(`onramp-profile-photo-${employee.id}`) ?? "");
   const [mobileMenu, setMobileMenu] = useState(false);
+  const [requestedSupportRequestId, setRequestedSupportRequestId] = useState<number | null>(null);
   const [unreadSupportCount, setUnreadSupportCount] = useState(0);
+  const [overdueTaskCount, setOverdueTaskCount] = useState(0);
+  const [preEntryOverdueCount, setPreEntryOverdueCount] = useState(0);
+  const [hrOverdueTaskCount, setHrOverdueTaskCount] = useState(0);
+  const updateOverdueCount = useCallback((count: number, preEntryCount: number) => {
+    setOverdueTaskCount(count);
+    setPreEntryOverdueCount(preEntryCount);
+  }, []);
+  const openSupportRequestChat = useCallback((requestId: number) => {
+    setRequestedSupportRequestId(requestId);
+    setActiveNav("Mensagens de suporte");
+    setMobileMenu(false);
+  }, []);
   const [journeyResetVersion, setJourneyResetVersion] = useState(0);
   const [peopleResetVersion, setPeopleResetVersion] = useState(0);
   const [databaseResources, setDatabaseResources] = useState<LibraryResource[]>([]);
   const [resourceStatus, setResourceStatus] = useState<"loading" | "ready" | "error">("loading");
   const [databaseStages, setDatabaseStages] = useState<{ code: string; name: string; description: string; durationLabel: string | null }[]>([]);
-  const [employeePlanTasks, setEmployeePlanTasks] = useState<{ id: number; stageCode: string; title: string; description: string; required: boolean; completed: boolean; dueOffsetDays: number }[]>([]);
+  const [employeePlanTasks, setEmployeePlanTasks] = useState<{ id: number; stageCode: string; title: string; description: string; required: boolean; completed: boolean; dueOffsetDays: number; dueDate: string; overdue: boolean }[]>([]);
   const [planStatus, setPlanStatus] = useState<"loading" | "ready" | "error">("loading");
 
   useEffect(() => {
@@ -43,6 +59,51 @@ function Dashboard({ employee, onLogout }: { employee: AuthenticatedEmployee; on
       window.removeEventListener("focus", refreshUnreadCount);
     };
   }, [employee.id]);
+
+  useEffect(() => {
+    if (employee.isHrAdmin) return;
+    let active = true;
+    async function refreshOverdueCount() {
+      try {
+        const response = await fetch("/api/me/plan/overdue-count");
+        if (!response.ok) return;
+        const result = await response.json() as { count: number; preEntryCount: number };
+        if (active) {
+          setOverdueTaskCount(result.count);
+          setPreEntryOverdueCount(result.preEntryCount);
+        }
+      } catch { /* Keep the latest known overdue count while offline. */ }
+    }
+    void refreshOverdueCount();
+    const interval = window.setInterval(() => void refreshOverdueCount(), 60_000);
+    window.addEventListener("focus", refreshOverdueCount);
+    return () => {
+      active = false;
+      window.clearInterval(interval);
+      window.removeEventListener("focus", refreshOverdueCount);
+    };
+  }, [employee.id, employee.isHrAdmin]);
+
+  useEffect(() => {
+    if (!employee.isHrAdmin) return;
+    let active = true;
+    async function refreshHrOverdueCount() {
+      try {
+        const response = await fetch("/api/hr/overdue-count");
+        if (!response.ok) return;
+        const result = await response.json() as { count: number };
+        if (active) setHrOverdueTaskCount(result.count);
+      } catch { /* Keep the last known HR overdue count if the server is offline. */ }
+    }
+    void refreshHrOverdueCount();
+    const interval = window.setInterval(() => void refreshHrOverdueCount(), 60_000);
+    window.addEventListener("focus", refreshHrOverdueCount);
+    return () => {
+      active = false;
+      window.clearInterval(interval);
+      window.removeEventListener("focus", refreshHrOverdueCount);
+    };
+  }, [employee.id, employee.isHrAdmin]);
 
   useEffect(() => {
     let cancelled = false;
@@ -127,7 +188,7 @@ function Dashboard({ employee, onLogout }: { employee: AuthenticatedEmployee; on
       fetch("/api/me/plan", { signal: controller.signal }).then(async (response) => {
         const result = await response.json();
         if (!response.ok) throw new Error(result.error ?? "Could not load employee plan.");
-        return result as { tasks: { id: number; stageCode: string; title: string; description: string; required: boolean; completed: boolean; dueOffsetDays: number }[] };
+        return result as { tasks: { id: number; stageCode: string; title: string; description: string; required: boolean; completed: boolean; dueOffsetDays: number; dueDate: string; overdue: boolean }[] };
       }),
     ]).then(([stages, plan]) => {
       setDatabaseStages(stages.map((stage) => ({ code: stage.code, name: stage.name, description: stage.description ?? "", durationLabel: stage.duration_label })));
@@ -144,12 +205,13 @@ function Dashboard({ employee, onLogout }: { employee: AuthenticatedEmployee; on
     [databaseResources, query],
   );
   const navItems: { label: string; icon: IconName }[] = employee.isHrAdmin
-    ? [{ label: "Pessoas da empresa", icon: "people" }, { label: "Jornadas", icon: "calendar" }, { label: "Mensagens de suporte", icon: "chat" }]
+    ? [{ label: "Pessoas da empresa", icon: "people" }, { label: "Jornadas", icon: "calendar" }, { label: "Acompanhamento", icon: "chat" }, { label: "Tarefas atrasadas", icon: "clock" }, { label: "Mensagens de suporte", icon: "chat" }]
     : [
         { label: "Início", icon: "home" },
         { label: "Minha jornada", icon: "calendar" },
         { label: "Conteúdos", icon: "book" },
         { label: "Pessoas & áreas", icon: "people" },
+        { label: "Pedir suporte", icon: "help" },
         { label: "Mensagens de suporte", icon: "chat" },
       ];
 
@@ -173,6 +235,8 @@ function Dashboard({ employee, onLogout }: { employee: AuthenticatedEmployee; on
               <span className="relative grid place-items-center">
                 <Icon name={item.icon} size={20} />
                 {item.label === "Mensagens de suporte" && unreadSupportCount > 0 && <span className="sidebar__unread-badge" role="status" aria-label={`${unreadSupportCount} mensagens não lidas`}>{unreadSupportCount > 99 ? "99+" : unreadSupportCount}</span>}
+                {item.label === "Minha jornada" && overdueTaskCount > 0 && <span className="sidebar__overdue-badge" role="status" title={`${preEntryOverdueCount} atrasadas na pré-entrada`} aria-label={`${overdueTaskCount} itens atrasados, ${preEntryOverdueCount} na pré-entrada`}>{overdueTaskCount > 99 ? "99+" : overdueTaskCount}</span>}
+                {item.label === "Tarefas atrasadas" && hrOverdueTaskCount > 0 && <span className="sidebar__overdue-badge" role="status" aria-label={`${hrOverdueTaskCount} tarefas atrasadas para revisar`}>{hrOverdueTaskCount > 99 ? "99+" : hrOverdueTaskCount}</span>}
               </span>
               {item.label}
             </button>
@@ -206,7 +270,13 @@ function Dashboard({ employee, onLogout }: { employee: AuthenticatedEmployee; on
           {activeNav === "Meu perfil" ? (
             <ProfileView employee={employee} photo={profilePhoto} onPhotoChange={setProfilePhoto} />
           ) : activeNav === "Mensagens de suporte" ? (
-            <MessagesView employee={employee} onUnreadCountChange={setUnreadSupportCount} />
+            <MessagesView employee={employee} onUnreadCountChange={setUnreadSupportCount} requestedSupportRequestId={requestedSupportRequestId} onSupportRequestOpened={() => setRequestedSupportRequestId(null)} />
+          ) : employee.isHrAdmin && activeNav === "Tarefas atrasadas" ? (
+            <OverdueTasksView />
+          ) : employee.isHrAdmin && activeNav === "Acompanhamento" ? (
+            <OnboardingSupportView onOpenChat={openSupportRequestChat} />
+          ) : !employee.isHrAdmin && activeNav === "Pedir suporte" ? (
+            <SupportRequestView onOpenChat={openSupportRequestChat} />
           ) : employee.isHrAdmin ? (
             <HrPlansView section={activeNav === "Jornadas" ? "plans" : "people"} />
           ) : activeNav === "Pessoas & áreas" ? (
@@ -214,7 +284,7 @@ function Dashboard({ employee, onLogout }: { employee: AuthenticatedEmployee; on
           ) : activeNav === "Conteúdos" ? (
             <ContentView query={query} setQuery={setQuery} resources={databaseResources} filtered={filtered} status={resourceStatus} />
           ) : activeNav === "Minha jornada" ? (
-            <JourneyView resetVersion={journeyResetVersion} employeeId={employee.id} />
+            <JourneyView resetVersion={journeyResetVersion} employeeId={employee.id} onOverdueCountChange={updateOverdueCount} />
           ) : (
             <HomeView employee={employee} stages={databaseStages} tasks={employeePlanTasks} planStatus={planStatus} query={query} setQuery={setQuery} resources={databaseResources} filtered={filtered} setActiveNav={setActiveNav} />
           )}

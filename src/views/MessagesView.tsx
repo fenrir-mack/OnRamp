@@ -4,6 +4,9 @@ import type { FormEvent } from "react"
 import type { AuthenticatedEmployee } from "../components/Login"
 import EmployeeAvatar from "../components/EmployeeAvatar"
 import { Icon } from "../components/shared"
+import MessageHistory, {
+  type MessageHistoryItem,
+} from "../components/MessageHistory"
 
 type Conversation = {
   conversationId: number
@@ -38,24 +41,45 @@ type ConversationMessage = {
   body: string
   sentAt: string
 }
-type ConversationMessageGroup = {
-  senderId: number | null
-  senderName: string
-  messages: ConversationMessage[]
-}
 type ConversationDetail = {
   conversation: Conversation
   messages: ConversationMessage[]
 }
 type Filter = "open" | "all" | "resolved"
+type SupportRequestConversation = {
+  id: number
+  employeeId: number
+  employeeName: string
+  employeeDepartment: string | null
+  subject: string
+  description: string
+  status: "open" | "in_progress" | "resolved"
+  submittedAt: string
+  hasChat: boolean
+  lastMessage: string
+  lastMessageAt: string
+}
+type SupportRequestChatMessage = {
+  id: number
+  senderEmployeeId: number
+  senderName: string
+  body: string
+  sentAt: string
+  isMine: boolean
+}
 
 function MessagesView({
   employee,
   onUnreadCountChange,
+  requestedSupportRequestId,
+  onSupportRequestOpened,
 }: {
   employee: AuthenticatedEmployee
   onUnreadCountChange: (count: number) => void
+  requestedSupportRequestId: number | null
+  onSupportRequestOpened: () => void
 }) {
+  const [showRequestChats, setShowRequestChats] = useState(false)
   const [conversations, setConversations] = useState<Conversation[]>([])
   const [selectedId, setSelectedId] = useState<number | null>(null)
   const [detail, setDetail] = useState<ConversationDetail | null>(null)
@@ -68,6 +92,10 @@ function MessagesView({
   const [error, setError] = useState("")
   const [now, setNow] = useState(Date.now())
   const historyRef = useRef<HTMLDivElement>(null)
+
+  useEffect(() => {
+    if (requestedSupportRequestId !== null) setShowRequestChats(true)
+  }, [requestedSupportRequestId])
 
   async function loadConversations(signal?: AbortSignal) {
     const response = await fetch("/api/support/conversations", { signal })
@@ -161,11 +189,6 @@ function MessagesView({
   const openCount = conversations.filter(
     ({ status }) => status !== "resolved",
   ).length
-  const messageGroups = useMemo(
-    () => groupMessages(detail?.messages ?? []),
-    [detail?.messages],
-  )
-
   function changeFilter(nextFilter: Filter) {
     setFilter(nextFilter)
     const nextRows = conversations.filter(
@@ -353,8 +376,42 @@ function MessagesView({
     ? getConversationContact(employee, selected)
     : null
 
+  if (showRequestChats) {
+    return (
+      <SupportRequestMessages
+        employee={employee}
+        initialRequestId={requestedSupportRequestId}
+        onInitialRequestOpened={onSupportRequestOpened}
+        onBack={() => setShowRequestChats(false)}
+      />
+    )
+  }
+
   return (
     <section className="messages-page">
+      <div
+        className="mb-4 flex flex-wrap gap-2"
+        role="tablist"
+        aria-label="Tipo de conversa"
+      >
+        <button
+          className="rounded-xl bg-[#5556d8] px-4 py-2.5 text-xs font-extrabold text-white"
+          role="tab"
+          aria-selected="true"
+          type="button"
+        >
+          Problemas da jornada
+        </button>
+        <button
+          className="rounded-xl border border-[#e5e5ee] bg-white px-4 py-2.5 text-xs font-extrabold text-[#5556d8]"
+          role="tab"
+          aria-selected="false"
+          onClick={() => setShowRequestChats(true)}
+          type="button"
+        >
+          Pedidos de suporte
+        </button>
+      </div>
       {error && (
         <p className="messages-page__error" role="alert">
           {error}
@@ -569,68 +626,17 @@ function MessagesView({
                   : `Aguardando ${selected.resolutionRespondentName ?? "a outra pessoa"} confirmar ou rejeitar até ${resolutionDueLabel}.`}
               </p>
             )}
-            <div
-              ref={historyRef}
-              className="messages-history"
-              aria-label="Histórico da conversa"
-              aria-live="polite"
-            >
-              <p className="messages-history__started">
-                Problema informado em {formatDateTime(selected.createdAt)}
-              </p>
-              {messageGroups.map((group) => {
-                if (group.senderId === null) {
-                  return (
-                    <div
-                      className="messages-history__event"
-                      key={group.messages[0].id}
-                    >
-                      {group.messages.map((message) => (
-                        <p key={message.id}>
-                          {message.body}
-                          <small>{formatDateTime(message.sentAt)}</small>
-                        </p>
-                      ))}
-                    </div>
-                  )
-                }
-                const isCurrentUser = group.senderId === employee.id
-                const isReporter = group.senderId === selected.employeeId
-                const firstMessage = group.messages[0]
-                return (
-                  <div
-                    className={`messages-bubble-row ${
-                      isCurrentUser ? "messages-bubble-row--mine" : ""
-                    }`}
-                    key={firstMessage.id}
-                  >
-                    <MessagesAvatar
-                      employeeId={group.senderId}
-                      name={group.senderName}
-                      className={isCurrentUser ? "messages-avatar--mine" : ""}
-                    />
-                    <div className="messages-bubble-wrap">
-                      <div className="messages-bubble__sender">
-                        {isCurrentUser ? "Você" : group.senderName}
-                        {isReporter && !isCurrentUser && (
-                          <span>Funcionário</span>
-                        )}
-                      </div>
-                      <div className="messages-bubble-stack">
-                        {group.messages.map((message) => (
-                          <p className="messages-bubble" key={message.id}>
-                            {message.body}
-                          </p>
-                        ))}
-                      </div>
-                      <small className="messages-bubble__time">
-                        {formatDateTime(firstMessage.sentAt)}
-                      </small>
-                    </div>
-                  </div>
-                )
-              })}
-            </div>
+            <MessageHistory
+              historyRef={historyRef}
+              messages={detail?.messages ?? []}
+              currentEmployeeId={employee.id}
+              reporterEmployeeId={selected.employeeId}
+              intro={
+                <p className="messages-history__started">
+                  Problema informado em {formatDateTime(selected.createdAt)}
+                </p>
+              }
+            />
             {showRejectionForm &&
               selected.status === "pending_confirmation" &&
               canRespondToResolution && (
@@ -759,35 +765,6 @@ function getConversationContact(
   }
 }
 
-function groupMessages(messages: ConversationMessage[]) {
-  const groups: ConversationMessageGroup[] = []
-  messages.forEach((message) => {
-    const currentGroup = groups[groups.length - 1]
-    const previousMessage =
-      currentGroup?.messages[currentGroup.messages.length - 1]
-    const elapsedSincePrevious = previousMessage
-      ? new Date(message.sentAt).getTime() -
-        new Date(previousMessage.sentAt).getTime()
-      : Number.POSITIVE_INFINITY
-    if (
-      currentGroup &&
-      currentGroup.senderId !== null &&
-      currentGroup.senderId === message.senderId &&
-      elapsedSincePrevious >= 0 &&
-      elapsedSincePrevious <= 3 * 60 * 1000
-    ) {
-      currentGroup.messages.push(message)
-    } else {
-      groups.push({
-        senderId: message.senderId,
-        senderName: message.senderName,
-        messages: [message],
-      })
-    }
-  })
-  return groups
-}
-
 function MessagesAvatar({
   employeeId,
   name,
@@ -808,6 +785,369 @@ function MessagesAvatar({
     <span className={avatarClassName}>{initials(name)}</span>
   )
 }
+
+function SupportRequestMessages({
+  employee,
+  initialRequestId,
+  onInitialRequestOpened,
+  onBack,
+}: {
+  employee: AuthenticatedEmployee
+  initialRequestId: number | null
+  onInitialRequestOpened: () => void
+  onBack: () => void
+}) {
+  const [conversations, setConversations] =
+    useState<SupportRequestConversation[]>([])
+  const [selectedId, setSelectedId] = useState<number | null>(initialRequestId)
+  const [messages, setMessages] = useState<SupportRequestChatMessage[]>([])
+  const [draft, setDraft] = useState("")
+  const [loading, setLoading] = useState(true)
+  const [saving, setSaving] = useState(false)
+  const [error, setError] = useState("")
+  const historyRef = useRef<HTMLDivElement>(null)
+  const historyMessages: MessageHistoryItem[] = useMemo(
+    () =>
+      messages.map((message) => ({
+        id: message.id,
+        senderId: message.senderEmployeeId,
+        senderName: message.senderName,
+        body: message.body,
+        sentAt: message.sentAt,
+      })),
+    [messages],
+  )
+
+  async function loadConversations(signal?: AbortSignal) {
+    const response = await fetch("/api/support/requests/conversations", {
+      signal,
+    })
+    const result = await response.json()
+    if (!response.ok)
+      throw new Error(
+        result.error ?? "Não foi possível carregar os pedidos de suporte.",
+      )
+    const rows = result.conversations as SupportRequestConversation[]
+    setConversations(rows)
+    setSelectedId((current) =>
+      current && rows.some((item) => item.id === current)
+        ? current
+        : (rows.find((item) => item.status !== "resolved")?.id ??
+          rows[0]?.id ??
+          null),
+    )
+  }
+
+  async function loadMessages(requestId: number, signal?: AbortSignal) {
+    const response = await fetch(
+      `/api/support/requests/${requestId}/messages`,
+      { signal },
+    )
+    const result = await response.json()
+    if (!response.ok)
+      throw new Error(result.error ?? "Não foi possível carregar o chat.")
+    setMessages(result.messages as SupportRequestChatMessage[])
+  }
+
+  useEffect(() => {
+    const controller = new AbortController()
+    setLoading(true)
+    loadConversations(controller.signal)
+      .then(() => {
+        if (initialRequestId !== null) {
+          setSelectedId(initialRequestId)
+          onInitialRequestOpened()
+        }
+      })
+      .catch((loadError: unknown) => {
+        if (
+          !(
+            loadError instanceof DOMException && loadError.name === "AbortError"
+          )
+        )
+          setError(
+            loadError instanceof Error
+              ? loadError.message
+              : "Não foi possível carregar os pedidos de suporte.",
+          )
+      })
+      .finally(() => {
+        if (!controller.signal.aborted) setLoading(false)
+      })
+    return () => controller.abort()
+  }, [employee.id])
+
+  useEffect(() => {
+    if (selectedId === null) {
+      setMessages([])
+      return
+    }
+    let active = true
+    const refresh = async () => {
+      try {
+        const response = await fetch(
+          `/api/support/requests/${selectedId}/messages`,
+        )
+        const result = await response.json()
+        if (!response.ok)
+          throw new Error(result.error ?? "Não foi possível carregar o chat.")
+        if (active) setMessages(result.messages as SupportRequestChatMessage[])
+      } catch (loadError) {
+        if (active)
+          setError(
+            loadError instanceof Error
+              ? loadError.message
+              : "Não foi possível carregar o chat.",
+          )
+      }
+    }
+    void refresh()
+    const interval = window.setInterval(() => {
+      void refresh()
+      void loadConversations().catch(() => undefined)
+    }, 5000)
+    return () => {
+      active = false
+      window.clearInterval(interval)
+    }
+  }, [selectedId])
+
+  useEffect(() => {
+    const frame = window.requestAnimationFrame(() => {
+      const history = historyRef.current
+      if (history)
+        history.scrollTo({ top: history.scrollHeight, behavior: "smooth" })
+    })
+    return () => window.cancelAnimationFrame(frame)
+  }, [messages.length])
+
+  async function sendMessage(event: FormEvent<HTMLFormElement>) {
+    event.preventDefault()
+    if (selectedId === null || !draft.trim()) return
+    setSaving(true)
+    setError("")
+    try {
+      const response = await fetch(
+        `/api/support/requests/${selectedId}/messages`,
+        {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({ body: draft }),
+        },
+      )
+      const result = await response.json()
+      if (!response.ok)
+        throw new Error(result.error ?? "Não foi possível enviar a mensagem.")
+      setDraft("")
+      await Promise.all([loadConversations(), loadMessages(selectedId)])
+    } catch (sendError) {
+      setError(
+        sendError instanceof Error
+          ? sendError.message
+          : "Não foi possível enviar a mensagem.",
+      )
+    } finally {
+      setSaving(false)
+    }
+  }
+
+  const selected = conversations.find((item) => item.id === selectedId) ?? null
+
+  return (
+    <section className="messages-page">
+      <div
+        className="mb-4 flex flex-wrap gap-2"
+        role="tablist"
+        aria-label="Tipo de conversa"
+      >
+        <button
+          className="rounded-xl border border-[#e5e5ee] bg-white px-4 py-2.5 text-xs font-extrabold text-[#5556d8]"
+          role="tab"
+          aria-selected="false"
+          onClick={onBack}
+          type="button"
+        >
+          Problemas da jornada
+        </button>
+        <button
+          className="rounded-xl bg-[#5556d8] px-4 py-2.5 text-xs font-extrabold text-white"
+          role="tab"
+          aria-selected="true"
+          type="button"
+        >
+          Pedidos de suporte
+        </button>
+      </div>
+      {error && (
+        <p className="messages-page__error" role="alert">
+          {error}
+        </p>
+      )}
+      <div className="messages-layout">
+        <aside
+          className="messages-inbox"
+          aria-label="Caixa de entrada de pedidos de suporte"
+        >
+          <div className="messages-inbox__heading">
+            <strong>Pedidos de suporte</strong>
+            <span>
+              {conversations.length}{" "}
+              {conversations.length === 1 ? "conversa" : "conversas"}
+            </span>
+          </div>
+          {loading ? (
+            <p className="messages-inbox__empty">Carregando conversas...</p>
+          ) : conversations.length ? (
+            <div className="messages-thread-list">
+              {conversations.map((item) => {
+                const contactName = employee.isHrAdmin
+                  ? item.employeeName
+                  : "Equipe de RH"
+                return (
+                  <button
+                    className={`messages-thread ${
+                      selectedId === item.id ? "messages-thread--active" : ""
+                    }`}
+                    key={item.id}
+                    onClick={() => setSelectedId(item.id)}
+                    type="button"
+                    aria-current={selectedId === item.id ? "true" : undefined}
+                  >
+                    <MessagesAvatar
+                      employeeId={employee.isHrAdmin ? item.employeeId : null}
+                      name={contactName}
+                    />
+                    <span className="messages-thread__body">
+                      <span className="messages-thread__top">
+                        <strong>{contactName}</strong>
+                        <small>{formatDate(item.lastMessageAt)}</small>
+                      </span>
+                      <span className="messages-thread__subject">
+                        {item.subject}
+                      </span>
+                      <span className="messages-thread__preview">
+                        {item.lastMessage}
+                      </span>
+                      <span className="messages-thread__bottom">
+                        <span
+                          className={`messages-status messages-status--${
+                            item.status === "resolved" ? "resolved" : "open"
+                          }`}
+                        >
+                          {item.status === "resolved"
+                            ? "Concluído"
+                            : item.hasChat
+                              ? "Em conversa"
+                              : "Aguardando início"}
+                        </span>
+                        <small>
+                          {employee.isHrAdmin
+                            ? (item.employeeDepartment ?? "Funcionário")
+                            : "Onboarding"}
+                        </small>
+                      </span>
+                    </span>
+                  </button>
+                )
+              })}
+            </div>
+          ) : (
+            <p className="messages-inbox__empty">
+              {employee.isHrAdmin
+                ? "Os pedidos gerais aparecerão aqui para iniciar ou continuar uma conversa."
+                : "As conversas iniciadas pelo RH aparecerão aqui."}
+            </p>
+          )}
+        </aside>
+        {selected ? (
+          <article className="messages-case">
+            <header className="messages-case__header">
+              <div className="messages-person">
+                <MessagesAvatar
+                  employeeId={employee.isHrAdmin ? selected.employeeId : null}
+                  name={
+                    employee.isHrAdmin ? selected.employeeName : "Equipe de RH"
+                  }
+                />
+                <div>
+                  <strong>
+                    {employee.isHrAdmin
+                      ? selected.employeeName
+                      : "Equipe de RH"}
+                  </strong>
+                  <small>{selected.subject}</small>
+                </div>
+              </div>
+              <div className="messages-case__actions">
+                <span
+                  className={`messages-status messages-status--${
+                    selected.status === "resolved" ? "resolved" : "open"
+                  }`}
+                >
+                  {selected.status === "resolved"
+                    ? "Concluído"
+                    : selected.hasChat
+                      ? "Em conversa"
+                      : "Novo pedido"}
+                </span>
+              </div>
+            </header>
+            <section className="messages-case__context">
+              <div>
+                <span className="messages-case__eyebrow">
+                  Pedido geral de suporte
+                </span>
+                <h2>{selected.subject}</h2>
+                <div className="messages-case__meta">
+                  <span>{selected.description}</span>
+                </div>
+              </div>
+            </section>
+            <MessageHistory
+              historyRef={historyRef}
+              messages={historyMessages}
+              currentEmployeeId={employee.id}
+              emptyMessage="Envie a primeira mensagem para iniciar o chat sobre este pedido."
+            />
+            <form className="messages-reply" onSubmit={sendMessage}>
+              <label htmlFor="support-request-reply">
+                Responder sobre este pedido
+              </label>
+              <textarea
+                id="support-request-reply"
+                maxLength={4000}
+                value={draft}
+                onChange={(event) => setDraft(event.target.value)}
+                placeholder="Escreva uma mensagem..."
+              />
+              <div className="messages-reply__footer">
+                <small>Conversa vinculada ao pedido de suporte</small>
+                <button disabled={saving || !draft.trim()} type="submit">
+                  {saving
+                    ? "Enviando..."
+                    : messages.length
+                      ? "Enviar mensagem"
+                      : "Iniciar chat"}
+                </button>
+              </div>
+            </form>
+          </article>
+        ) : (
+          <article className="messages-case messages-case--empty">
+            <div className="messages-empty-icon">
+              <Icon name="chat" size={23} />
+            </div>
+            <h2>Escolha um pedido de suporte</h2>
+            <p>
+              As conversas gerais com funcionários ficam nesta caixa de entrada.
+            </p>
+          </article>
+        )}
+      </div>
+    </section>
+  )
+}
+
 function formatDate(value: string) {
   return new Date(value).toLocaleDateString("pt-BR", {
     day: "2-digit",

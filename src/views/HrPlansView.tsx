@@ -16,6 +16,8 @@ type Account = {
   teams: string[];
   managerEmployeeId?: number | null;
   managerName?: string | null;
+  mentorEmployeeId?: number | null;
+  mentorName?: string | null;
   isActive: boolean;
   planTaskCount: number;
 };
@@ -143,6 +145,25 @@ const emptyDraft: TaskDraft = {
   required: true,
 };
 
+async function fetchHrJson<T>(url: string, fallbackMessage: string, init?: RequestInit): Promise<T> {
+  const response = await fetch(url, init);
+  const body = await response.text();
+  let result: unknown = null;
+  if (body.trim()) {
+    try {
+      result = JSON.parse(body);
+    } catch {
+      throw new Error(`${fallbackMessage} A resposta de ${url} não veio em JSON (HTTP ${response.status}).`);
+    }
+  }
+  if (!response.ok) {
+    const apiError = result && typeof result === "object" && "error" in result && typeof result.error === "string" ? result.error : null;
+    throw new Error(apiError ?? `${fallbackMessage} (${url}, HTTP ${response.status}).`);
+  }
+  if (result === null) throw new Error(`${fallbackMessage} ${url} retornou uma resposta vazia (HTTP ${response.status}).`);
+  return result as T;
+}
+
 function HrPlansView({ section }: { section: "people" | "plans" }) {
   const [accounts, setAccounts] = useState<Account[]>([]);
   const [responsiblePeople, setResponsiblePeople] = useState<ResponsiblePerson[]>([]);
@@ -170,7 +191,7 @@ function HrPlansView({ section }: { section: "people" | "plans" }) {
   const [planResources, setPlanResources] = useState<PlanResource[]>([]);
   const [creatingAccount, setCreatingAccount] = useState(false);
   const [showAccountForm, setShowAccountForm] = useState(false);
-  const [accountDraft, setAccountDraft] = useState({ name: "", email: "", jobTitle: "", departmentIds: [] as number[], teamIds: [] as number[], managerEmployeeId: "", password: "" });
+  const [accountDraft, setAccountDraft] = useState({ name: "", email: "", jobTitle: "", departmentIds: [] as number[], teamIds: [] as number[], managerEmployeeId: "", mentorEmployeeId: "", password: "" });
   const [editingAccountId, setEditingAccountId] = useState<number | null>(null);
   const [peopleSearch, setPeopleSearch] = useState("");
   const [peopleView, setPeopleView] = useState<"people" | "organization">("people");
@@ -194,46 +215,14 @@ function HrPlansView({ section }: { section: "people" | "plans" }) {
 
   useEffect(() => {
     Promise.all([
-      fetch("/api/hr/accounts").then(async (response) => {
-        const result = await response.json();
-        if (!response.ok) throw new Error(result.error ?? "Não foi possível carregar as contas.");
-        return result as Account[];
-      }),
-      fetch("/api/stages").then(async (response) => {
-        const result = await response.json();
-        if (!response.ok) throw new Error(result.error ?? "Não foi possível carregar as etapas.");
-        return result as Stage[];
-      }),
-      fetch("/api/hr/departments").then(async (response) => {
-        const result = await response.json();
-        if (!response.ok) throw new Error(result.error ?? "Não foi possível carregar as áreas.");
-        return result as Department[];
-      }),
-      fetch("/api/hr/teams").then(async (response) => {
-        const result = await response.json();
-        if (!response.ok) throw new Error(result.error ?? "Não foi possível carregar as equipes.");
-        return result as Team[];
-      }),
-      fetch("/api/resources").then(async (response) => {
-        const result = await response.json();
-        if (!response.ok) throw new Error(result.error ?? "Não foi possível carregar os materiais.");
-        return result as Resource[];
-      }),
-      fetch("/api/hr/resource-categories").then(async (response) => {
-        const result = await response.json();
-        if (!response.ok) throw new Error(result.error ?? "Não foi possível carregar as categorias.");
-        return result as ResourceCategory[];
-      }),
-      fetch("/api/hr/task-presets").then(async (response) => {
-        const result = await response.json();
-        if (!response.ok) throw new Error(result.error ?? "Não foi possível carregar os pacotes de tarefas.");
-        return result as TaskPreset[];
-      }),
-      fetch("/api/hr/responsibles").then(async (response) => {
-        const result = await response.json();
-        if (!response.ok) throw new Error(result.error ?? "Não foi possível carregar as pessoas responsáveis.");
-        return result as ResponsiblePerson[];
-      }),
+      fetchHrJson<Account[]>("/api/hr/accounts", "Não foi possível carregar as contas."),
+      fetchHrJson<Stage[]>("/api/stages", "Não foi possível carregar as etapas."),
+      fetchHrJson<Department[]>("/api/hr/departments", "Não foi possível carregar as áreas."),
+      fetchHrJson<Team[]>("/api/hr/teams", "Não foi possível carregar as equipes."),
+      fetchHrJson<Resource[]>("/api/resources", "Não foi possível carregar os materiais."),
+      fetchHrJson<ResourceCategory[]>("/api/hr/resource-categories", "Não foi possível carregar as categorias."),
+      fetchHrJson<TaskPreset[]>("/api/hr/task-presets", "Não foi possível carregar os pacotes de tarefas."),
+      fetchHrJson<ResponsiblePerson[]>("/api/hr/responsibles", "Não foi possível carregar as pessoas responsáveis."),
     ])
       .then(([accountRows, stageRows, departmentRows, teamRows, resourceRows, categoryRows, presetRows, responsibleRows]) => {
         setAccounts(accountRows);
@@ -558,8 +547,9 @@ function HrPlansView({ section }: { section: "people" | "plans" }) {
       departmentIds: account.departmentIds ?? (account.departmentId ? [account.departmentId] : []),
       teamIds: account.teamIds ?? [],
       managerEmployeeId: String(account.managerEmployeeId ?? ""),
+      mentorEmployeeId: String(account.mentorEmployeeId ?? ""),
       password: "",
-    } : { name: "", email: "", jobTitle: "", departmentIds: [], teamIds: [], managerEmployeeId: "", password: "" });
+    } : { name: "", email: "", jobTitle: "", departmentIds: [], teamIds: [], managerEmployeeId: "", mentorEmployeeId: "", password: "" });
   }
 
   async function saveAccount(event: FormEvent<HTMLFormElement>) {
@@ -572,7 +562,7 @@ function HrPlansView({ section }: { section: "people" | "plans" }) {
         method: editingAccountId ? "PATCH" : "POST",
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify(editingAccountId
-          ? { name: accountDraft.name, email: accountDraft.email, jobTitle: accountDraft.jobTitle, departmentIds: accountDraft.departmentIds, teamIds: accountDraft.teamIds, managerEmployeeId: accountDraft.managerEmployeeId, isActive: accounts.find(({ id }) => id === editingAccountId)?.isActive ?? true }
+          ? { name: accountDraft.name, email: accountDraft.email, jobTitle: accountDraft.jobTitle, departmentIds: accountDraft.departmentIds, teamIds: accountDraft.teamIds, managerEmployeeId: accountDraft.managerEmployeeId, mentorEmployeeId: accountDraft.mentorEmployeeId, isActive: accounts.find(({ id }) => id === editingAccountId)?.isActive ?? true }
           : accountDraft),
       });
       const result = await response.json();
@@ -583,7 +573,7 @@ function HrPlansView({ section }: { section: "people" | "plans" }) {
       setAccounts(refreshedAccounts as Account[]);
       const account = (refreshedAccounts as Account[]).find(({ id }) => id === result.id);
       if (!editingAccountId && account?.isActive) setSelectedAccountId(account.id);
-      setAccountDraft({ name: "", email: "", jobTitle: "", departmentIds: [], teamIds: [], managerEmployeeId: "", password: "" });
+      setAccountDraft({ name: "", email: "", jobTitle: "", departmentIds: [], teamIds: [], managerEmployeeId: "", mentorEmployeeId: "", password: "" });
       setEditingAccountId(null);
       setShowAccountForm(false);
       setNotice(editingAccountId ? `Dados de ${account?.name ?? "pessoa"} atualizados.` : `Conta criada para ${account?.name ?? "a pessoa"}. Agora você pode montar o onboarding dessa pessoa.`);
@@ -598,7 +588,7 @@ function HrPlansView({ section }: { section: "people" | "plans" }) {
     try {
       const response = await fetch(`/api/hr/accounts/${account.id}`, {
         method: "PATCH", headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ name: account.name, email: account.email, jobTitle: account.jobTitle ?? "", departmentIds: account.departmentIds ?? (account.departmentId ? [account.departmentId] : []), teamIds: account.teamIds ?? [], managerEmployeeId: account.managerEmployeeId ?? "", isActive: !account.isActive }),
+        body: JSON.stringify({ name: account.name, email: account.email, jobTitle: account.jobTitle ?? "", departmentIds: account.departmentIds ?? (account.departmentId ? [account.departmentId] : []), teamIds: account.teamIds ?? [], managerEmployeeId: account.managerEmployeeId ?? "", mentorEmployeeId: account.mentorEmployeeId ?? "", isActive: !account.isActive }),
       });
       const result = await response.json();
       if (!response.ok) throw new Error(result.error ?? "Não foi possível alterar o status da conta.");
@@ -892,7 +882,8 @@ function HrPlansView({ section }: { section: "people" | "plans" }) {
           <label><span className="mb-2 block text-xs font-bold text-[#55576d]">Nome completo</span><input required maxLength={160} className="w-full rounded-xl border border-[#e3e3ed] px-3 py-3 text-sm" value={accountDraft.name} onChange={(event) => setAccountDraft((current) => ({ ...current, name: event.target.value }))} /></label>
           <label><span className="mb-2 block text-xs font-bold text-[#55576d]">E-mail</span><input required type="email" maxLength={254} className="w-full rounded-xl border border-[#e3e3ed] px-3 py-3 text-sm" value={accountDraft.email} onChange={(event) => setAccountDraft((current) => ({ ...current, email: event.target.value }))} /></label>
           <label><span className="mb-2 block text-xs font-bold text-[#55576d]">Cargo</span><input maxLength={120} className="w-full rounded-xl border border-[#e3e3ed] px-3 py-3 text-sm" value={accountDraft.jobTitle} onChange={(event) => setAccountDraft((current) => ({ ...current, jobTitle: event.target.value }))} /></label>
-          <label><span className="mb-2 block text-xs font-bold text-[#55576d]">Liderança direta</span><select className="w-full rounded-xl border border-[#e3e3ed] bg-white px-3 py-3 text-sm" value={accountDraft.managerEmployeeId} onChange={(event) => setAccountDraft((current) => ({ ...current, managerEmployeeId: event.target.value }))}><option value="">Sem liderança definida</option>{accounts.filter((person) => person.isActive && person.id !== editingAccountId).map((person) => <option key={person.id} value={person.id}>{person.name}</option>)}</select></label>
+          <label><span className="mb-2 block text-xs font-bold text-[#55576d]">Liderança direta</span><select className="w-full rounded-xl border border-[#e3e3ed] bg-white px-3 py-3 text-sm" value={accountDraft.managerEmployeeId} onChange={(event) => setAccountDraft((current) => ({ ...current, managerEmployeeId: event.target.value, mentorEmployeeId: current.mentorEmployeeId === event.target.value ? "" : current.mentorEmployeeId }))}><option value="">Sem liderança definida</option>{accounts.filter((person) => person.isActive && person.id !== editingAccountId).map((person) => <option key={person.id} value={person.id}>{person.name}</option>)}</select></label>
+          <label><span className="mb-2 block text-xs font-bold text-[#55576d]">Pessoa mentora</span><select className="w-full rounded-xl border border-[#e3e3ed] bg-white px-3 py-3 text-sm" value={accountDraft.mentorEmployeeId} onChange={(event) => setAccountDraft((current) => ({ ...current, mentorEmployeeId: event.target.value }))}><option value="">Sem pessoa mentora definida</option>{accounts.filter((person) => person.isActive && person.id !== editingAccountId && person.id !== Number(accountDraft.managerEmployeeId)).map((person) => <option key={person.id} value={person.id}>{person.name}{person.jobTitle ? ` · ${person.jobTitle}` : ""}</option>)}</select><small className="mt-1 block text-[10px] text-[#85879a]">Escolha uma pessoa diferente da liderança direta para acompanhar a integração.</small></label>
           <fieldset className="rounded-xl border border-[#e3e3ed] p-4"><legend className="px-1 text-xs font-bold text-[#55576d]">Áreas</legend><p className="mb-3 text-[11px] text-[#85879a]">Selecione todas as áreas desta pessoa.</p><div className="max-h-44 space-y-2 overflow-y-auto">{departments.map((department) => <label className="flex items-center gap-2 text-sm text-[#45475d]" key={department.id}><input className="size-4 accent-[#5b5ce2]" type="checkbox" checked={accountDraft.departmentIds.includes(department.id)} onChange={() => toggleDepartmentSelection(department.id)} />{department.name}</label>)}</div>{!departments.length && <button className="text-xs font-bold text-[#5556d8]" onClick={() => { setPeopleView("organization"); setShowAccountForm(false); }} type="button">Crie uma área primeiro</button>}</fieldset>
           <fieldset className="rounded-xl border border-[#e3e3ed] p-4"><legend className="px-1 text-xs font-bold text-[#55576d]">Equipes</legend><p className="mb-3 text-[11px] text-[#85879a]">Uma equipe pode juntar pessoas de várias áreas. Sub-equipes aparecem indentadas.</p><div className="max-h-44 space-y-2 overflow-y-auto">{teamRows.map(({ team, depth }) => <label className="flex items-center gap-2 text-sm text-[#45475d]" key={team.id}><input className="size-4 accent-[#5b5ce2]" type="checkbox" checked={accountDraft.teamIds.includes(team.id)} onChange={() => toggleTeamSelection(team.id)} /><span>{`${"　".repeat(depth)}${depth ? "↳ " : ""}${team.name}`}</span></label>)}</div>{!teams.length && <button className="text-xs font-bold text-[#5556d8]" onClick={() => { setPeopleView("organization"); setShowAccountForm(false); }} type="button">Crie uma equipe primeiro</button>}</fieldset>
           {!editingAccountId && <label><span className="mb-2 block text-xs font-bold text-[#55576d]">Senha inicial</span><input required minLength={8} type="password" autoComplete="new-password" className="w-full rounded-xl border border-[#e3e3ed] px-3 py-3 text-sm" value={accountDraft.password} onChange={(event) => setAccountDraft((current) => ({ ...current, password: event.target.value }))} /><small className="mt-1 block text-[10px] text-[#85879a]">Mínimo de 8 caracteres.</small></label>}
@@ -902,7 +893,7 @@ function HrPlansView({ section }: { section: "people" | "plans" }) {
 
       {section === "people" && peopleView === "people" && <div className="content-panel mt-6">
         <div className="flex flex-wrap items-end justify-between gap-4"><div><p className="eyebrow">Diretório</p><h2 className="mt-1 text-xl font-extrabold">Pessoas da empresa</h2><p className="mt-1 text-sm text-[#85879a]">{accounts.length} contas cadastradas · {activeAccounts.length} ativas</p></div><input aria-label="Buscar pessoa" className="w-full max-w-sm rounded-xl border border-[#e3e3ed] px-4 py-3 text-sm" placeholder="Buscar por nome, e-mail, cargo ou área" value={peopleSearch} onChange={(event) => setPeopleSearch(event.target.value)} /></div>
-        {loadingAccounts ? <p className="mt-6 text-sm text-[#85879a]">Carregando pessoas...</p> : filteredPeople.length ? <div className="mt-5 divide-y divide-[#eeeeF4]">{filteredPeople.map((person) => <article className="flex flex-wrap items-center gap-3 py-4" key={person.id}><EmployeeAvatar employeeId={person.id} name={person.name} className="grid size-11 shrink-0 place-items-center rounded-xl bg-[#f1f0ff] text-sm font-extrabold text-[#5b5ce2]" /><div className="min-w-0 flex-1"><div className="flex flex-wrap items-center gap-2"><h3 className="font-extrabold text-[#303249]">{person.name}</h3><span className={`rounded-full px-2 py-1 text-[10px] font-extrabold ${person.isActive ? "bg-emerald-50 text-emerald-700" : "bg-[#f2f2f5] text-[#85879a]"}`}>{person.isActive ? "Ativa" : "Inativa"}</span></div><p className="mt-1 text-xs text-[#777a91]">{person.email} · {person.jobTitle ?? "Cargo não informado"}</p><p className="mt-1 text-xs text-[#85879a]">Áreas: {person.departments.length ? person.departments.join(" · ") : "Sem área"} · Equipes: {person.teams.length ? person.teams.join(" · ") : "Sem equipe"}{person.managerName ? ` · Liderança: ${person.managerName}` : " · Sem liderança"}</p></div><button className="rounded-lg border border-[#e6e6ef] px-3 py-2 text-xs font-bold text-[#5b5ce2]" onClick={() => openAccountForm(person)} type="button">Editar</button><button className={`rounded-lg border px-3 py-2 text-xs font-bold ${person.isActive ? "border-[#f1dada] text-[#b84f4f]" : "border-emerald-200 text-emerald-700"}`} onClick={() => void toggleAccountActive(person)} type="button">{person.isActive ? "Desativar" : "Reativar"}</button></article>)}</div> : <p className="mt-6 text-sm text-[#85879a]">Nenhuma pessoa corresponde à busca.</p>}
+        {loadingAccounts ? <p className="mt-6 text-sm text-[#85879a]">Carregando pessoas...</p> : filteredPeople.length ? <div className="mt-5 divide-y divide-[#eeeeF4]">{filteredPeople.map((person) => <article className="flex flex-wrap items-center gap-3 py-4" key={person.id}><EmployeeAvatar employeeId={person.id} name={person.name} className="grid size-11 shrink-0 place-items-center rounded-xl bg-[#f1f0ff] text-sm font-extrabold text-[#5b5ce2]" /><div className="min-w-0 flex-1"><div className="flex flex-wrap items-center gap-2"><h3 className="font-extrabold text-[#303249]">{person.name}</h3><span className={`rounded-full px-2 py-1 text-[10px] font-extrabold ${person.isActive ? "bg-emerald-50 text-emerald-700" : "bg-[#f2f2f5] text-[#85879a]"}`}>{person.isActive ? "Ativa" : "Inativa"}</span></div><p className="mt-1 text-xs text-[#777a91]">{person.email} · {person.jobTitle ?? "Cargo não informado"}</p><p className="mt-1 text-xs text-[#85879a]">Áreas: {person.departments.length ? person.departments.join(" · ") : "Sem área"} · Equipes: {person.teams.length ? person.teams.join(" · ") : "Sem equipe"}{person.managerName ? ` · Liderança: ${person.managerName}` : " · Sem liderança"}{person.mentorName ? ` · Mentor(a): ${person.mentorName}` : " · Sem mentor(a)"}</p></div><button className="rounded-lg border border-[#e6e6ef] px-3 py-2 text-xs font-bold text-[#5b5ce2]" onClick={() => openAccountForm(person)} type="button">Editar</button><button className={`rounded-lg border px-3 py-2 text-xs font-bold ${person.isActive ? "border-[#f1dada] text-[#b84f4f]" : "border-emerald-200 text-emerald-700"}`} onClick={() => void toggleAccountActive(person)} type="button">{person.isActive ? "Desativar" : "Reativar"}</button></article>)}</div> : <p className="mt-6 text-sm text-[#85879a]">Nenhuma pessoa corresponde à busca.</p>}
       </div>}
 
       {section === "plans" && <div className="mt-7 pb-24">

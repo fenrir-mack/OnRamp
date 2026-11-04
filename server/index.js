@@ -93,6 +93,9 @@ app.get("/api/me/plan", requireAuthenticated, async (request, response) => {
           plan_task.owner_employee_id AS "ownerEmployeeId", task_owner.full_name AS "ownerName",
           plan_task.due_offset_days AS "dueOffsetDays", plan_task.is_required AS required,
           COALESCE(progress.is_completed, FALSE) AS completed,
+          (COALESCE(onboarding.start_date, employee.created_at::date) + plan_task.due_offset_days) AS "dueDate",
+          (COALESCE(progress.is_completed, FALSE) IS FALSE
+            AND COALESCE(onboarding.start_date, employee.created_at::date) + plan_task.due_offset_days < CURRENT_DATE) AS overdue,
           COALESCE((SELECT json_agg(json_build_object('id', issue.employee_plan_task_issue_id, 'description', issue.description, 'createdAt', issue.created_at) ORDER BY issue.created_at DESC)
             FROM public.employee_plan_task_issues AS issue
             WHERE issue.employee_plan_task_id = plan_task.employee_plan_task_id AND issue.employee_id = $1
@@ -103,6 +106,14 @@ app.get("/api/me/plan", requireAuthenticated, async (request, response) => {
               )), '[]'::json) AS issues
         FROM public.employee_plan_tasks AS plan_task
         INNER JOIN public.stage_templates AS stage ON stage.stage_template_id = plan_task.stage_template_id
+        INNER JOIN public.employees AS employee ON employee.employee_id = plan_task.employee_id
+        LEFT JOIN LATERAL (
+          SELECT onboarding.start_date
+          FROM public.onboardings AS onboarding
+          WHERE onboarding.employee_id = employee.employee_id AND onboarding.status = 'active'
+          ORDER BY onboarding.updated_at DESC, onboarding.onboarding_id DESC
+          LIMIT 1
+        ) AS onboarding ON TRUE
         LEFT JOIN public.employees AS task_owner ON task_owner.employee_id = plan_task.owner_employee_id
         LEFT JOIN public.employee_plan_task_progress AS progress
           ON progress.employee_plan_task_id = plan_task.employee_plan_task_id AND progress.employee_id = $1
@@ -127,6 +138,35 @@ app.get("/api/me/plan", requireAuthenticated, async (request, response) => {
   } catch (error) {
     console.error("Could not load the employee onboarding plan:", error.message);
     return response.status(500).json({ error: "Não foi possível carregar sua jornada personalizada." });
+  }
+});
+
+app.get("/api/me/plan/overdue-count", requireAuthenticated, async (request, response) => {
+  const employeeId = request.authenticatedEmployee.employee_id;
+  try {
+    const result = await pool.query(`
+      SELECT COUNT(*)::int AS count,
+        COUNT(*) FILTER (WHERE stage.stage_code = 'pre-entry')::int AS "preEntryCount"
+      FROM public.employee_plan_tasks AS plan_task
+      INNER JOIN public.stage_templates AS stage ON stage.stage_template_id = plan_task.stage_template_id
+      INNER JOIN public.employees AS employee ON employee.employee_id = plan_task.employee_id
+      LEFT JOIN public.employee_plan_task_progress AS progress
+        ON progress.employee_plan_task_id = plan_task.employee_plan_task_id AND progress.employee_id = $1
+      LEFT JOIN LATERAL (
+        SELECT onboarding.start_date
+        FROM public.onboardings AS onboarding
+        WHERE onboarding.employee_id = employee.employee_id AND onboarding.status = 'active'
+        ORDER BY onboarding.updated_at DESC, onboarding.onboarding_id DESC
+        LIMIT 1
+      ) AS onboarding ON TRUE
+      WHERE plan_task.employee_id = $1
+        AND COALESCE(progress.is_completed, FALSE) IS FALSE
+        AND COALESCE(onboarding.start_date, employee.created_at::date) + plan_task.due_offset_days < CURRENT_DATE
+    `, [employeeId]);
+    return response.json(result.rows[0] ?? { count: 0, preEntryCount: 0 });
+  } catch (error) {
+    console.error("Could not load overdue task count:", error.message);
+    return response.status(500).json({ error: "Não foi possível carregar os itens atrasados." });
   }
 });
 
@@ -187,6 +227,314 @@ app.post("/api/me/plan/tasks/:taskId/issues", requireAuthenticated, async (reque
     return response.status(500).json({ error: "Não foi possível enviar o problema." });
   } finally {
     client.release();
+  }
+});
+
+app.get("/api/me/support-requests", requireAuthenticated, async (request, response) => {
+  try {
+    const result = await pool.query(`
+      SELECT request.employee_support_request_id AS id, request.category, request.subject, request.description, request.status,
+        request.follow_up_note AS "followUpNote", request.submitted_at AS "submittedAt", request.updated_at AS "updatedAt",
+        EXISTS (SELECT 1 FROM public.employee_support_request_messages AS message WHERE message.employee_support_request_id = request.employee_support_request_id) AS "hasChat"
+      FROM public.employee_support_requests AS request WHERE request.employee_id = $1
+      ORDER BY request.submitted_at DESC, request.employee_support_request_id DESC
+    `, [request.authenticatedEmployee.employee_id]);
+    return response.json({ requests: result.rows });
+  } catch (error) {
+    console.error("Could not load employee support requests:", error.message);
+    return response.status(500).json({ error: "Não foi possível carregar seus pedidos." });
+  }
+});
+
+app.post("/api/me/support-requests", requireAuthenticated, async (request, response) => {
+  const category = request.body?.category;
+  const subject = typeof request.body?.subject === "string" ? request.body.subject.trim() : "";
+  const description = typeof request.body?.description === "string" ? request.body.description.trim() : "";
+  if (!["question", "support"].includes(category) || !subject || subject.length > 180 || !description || description.length > 2000) {
+    return response.status(400).json({ error: "Informe o tipo, o assunto e uma descrição de até 2.000 caracteres." });
+  }
+  try {
+    const result = await pool.query(`
+      INSERT INTO public.employee_support_requests (employee_id, category, subject, description)
+      VALUES ($1, $2, $3, $4)
+      RETURNING employee_support_request_id AS id, category, subject, description, status,
+        follow_up_note AS "followUpNote", submitted_at AS "submittedAt", updated_at AS "updatedAt"
+    `, [request.authenticatedEmployee.employee_id, category, subject, description]);
+    return response.status(201).json(result.rows[0]);
+  } catch (error) {
+    console.error("Could not create employee support request:", error.message);
+    return response.status(500).json({ error: "Não foi possível enviar seu pedido." });
+  }
+});
+
+app.get("/api/support/requests/:requestId/messages", requireAuthenticated, async (request, response) => {
+  const requestId = parseAccountId(request.params.requestId);
+  if (!requestId) return response.status(400).json({ error: "Pedido inválido." });
+  const employeeId = request.authenticatedEmployee.employee_id;
+  const isHrAdmin = request.authenticatedEmployee.is_hr_admin === true;
+  try {
+    const supportRequest = await pool.query(`SELECT employee_support_request_id FROM public.employee_support_requests WHERE employee_support_request_id = $1 AND ($2::boolean OR employee_id = $3)`, [requestId, isHrAdmin, employeeId]);
+    if (!supportRequest.rowCount) return response.status(404).json({ error: "Pedido não encontrado." });
+    const messages = await pool.query(`
+      SELECT message.employee_support_request_message_id AS id, message.sender_employee_id AS "senderEmployeeId",
+        sender.full_name AS "senderName", message.body, message.sent_at AS "sentAt",
+        (message.sender_employee_id = $2) AS "isMine"
+      FROM public.employee_support_request_messages AS message
+      INNER JOIN public.employees AS sender ON sender.employee_id = message.sender_employee_id
+      WHERE message.employee_support_request_id = $1
+      ORDER BY message.sent_at, message.employee_support_request_message_id
+    `, [requestId, employeeId]);
+    return response.json({ messages: messages.rows });
+  } catch (error) {
+    console.error("Could not load support request chat:", error.message);
+    return response.status(500).json({ error: "Não foi possível carregar o chat deste pedido." });
+  }
+});
+
+app.get("/api/support/requests/conversations", requireAuthenticated, async (request, response) => {
+  const employeeId = request.authenticatedEmployee.employee_id;
+  const isHrAdmin = request.authenticatedEmployee.is_hr_admin === true;
+  try {
+    const result = await pool.query(`
+      SELECT support_request.employee_support_request_id AS id,
+        support_request.employee_id AS "employeeId", employee.full_name AS "employeeName",
+        department.name AS "employeeDepartment", support_request.subject, support_request.description,
+        support_request.status, support_request.submitted_at AS "submittedAt",
+        EXISTS (SELECT 1 FROM public.employee_support_request_messages AS message
+          WHERE message.employee_support_request_id = support_request.employee_support_request_id) AS "hasChat",
+        COALESCE(last_message.body, support_request.description) AS "lastMessage",
+        COALESCE(last_message.sent_at, support_request.submitted_at) AS "lastMessageAt"
+      FROM public.employee_support_requests AS support_request
+      INNER JOIN public.employees AS employee ON employee.employee_id = support_request.employee_id
+      LEFT JOIN public.departments AS department ON department.department_id = employee.department_id
+      LEFT JOIN LATERAL (
+        SELECT message.body, message.sent_at
+        FROM public.employee_support_request_messages AS message
+        WHERE message.employee_support_request_id = support_request.employee_support_request_id
+        ORDER BY message.sent_at DESC, message.employee_support_request_message_id DESC LIMIT 1
+      ) AS last_message ON TRUE
+      WHERE ($1::boolean OR support_request.employee_id = $2)
+      ORDER BY COALESCE(last_message.sent_at, support_request.submitted_at) DESC,
+        support_request.employee_support_request_id DESC
+    `, [isHrAdmin, employeeId]);
+    return response.json({ conversations: result.rows });
+  } catch (error) {
+    console.error("Could not load support request conversations:", error.message);
+    return response.status(500).json({ error: "Não foi possível carregar as conversas de pedidos gerais." });
+  }
+});
+
+async function ensureSupportRequestOpeningMessage(client, requestId, requesterId, subject, description) {
+  const openingBody = `${subject}\n\n${description}`;
+  const existingOpening = await client.query(`
+    SELECT 1 FROM public.employee_support_request_messages
+    WHERE employee_support_request_id = $1 AND sender_employee_id = $2 AND body = $3 LIMIT 1
+  `, [requestId, requesterId, openingBody]);
+  if (existingOpening.rowCount) return false;
+  const firstMessage = await client.query(`
+    SELECT MIN(sent_at) AS "firstSentAt"
+    FROM public.employee_support_request_messages
+    WHERE employee_support_request_id = $1
+  `, [requestId]);
+  if (firstMessage.rows[0].firstSentAt) {
+    await client.query(`
+      INSERT INTO public.employee_support_request_messages (employee_support_request_id, sender_employee_id, body, sent_at)
+      VALUES ($1, $2, $3, $4::timestamptz - INTERVAL '1 second')
+    `, [requestId, requesterId, openingBody, firstMessage.rows[0].firstSentAt]);
+  } else {
+    await client.query(`
+      INSERT INTO public.employee_support_request_messages (employee_support_request_id, sender_employee_id, body)
+      VALUES ($1, $2, $3)
+    `, [requestId, requesterId, openingBody]);
+  }
+  return true;
+}
+
+app.post("/api/support/requests/:requestId/start", requireHr, async (request, response) => {
+  const requestId = parseAccountId(request.params.requestId);
+  if (!requestId) return response.status(400).json({ error: "Pedido inválido." });
+  const client = await pool.connect();
+  try {
+    await client.query("BEGIN");
+    const supportRequest = await client.query(`SELECT employee_support_request_id, employee_id, subject, description FROM public.employee_support_requests WHERE employee_support_request_id = $1 FOR UPDATE`, [requestId]);
+    if (!supportRequest.rowCount) { await client.query("ROLLBACK"); return response.status(404).json({ error: "Pedido não encontrado." }); }
+    await ensureSupportRequestOpeningMessage(client, requestId, supportRequest.rows[0].employee_id, supportRequest.rows[0].subject, supportRequest.rows[0].description);
+    await client.query(`UPDATE public.employee_support_requests SET status = CASE WHEN status = 'open' THEN 'in_progress' ELSE status END, handled_by_employee_id = $2, updated_at = CURRENT_TIMESTAMP WHERE employee_support_request_id = $1`, [requestId, request.authenticatedEmployee.employee_id]);
+    await client.query("COMMIT");
+    return response.json({ started: true });
+  } catch (error) {
+    await client.query("ROLLBACK").catch(() => undefined);
+    console.error("Could not start support request chat:", error.message);
+    return response.status(500).json({ error: "Não foi possível iniciar o chat." });
+  } finally { client.release(); }
+});
+
+app.post("/api/support/requests/:requestId/messages", requireAuthenticated, async (request, response) => {
+  const requestId = parseAccountId(request.params.requestId);
+  const body = typeof request.body?.body === "string" ? request.body.body.trim() : "";
+  if (!requestId || !body || body.length > 4000) return response.status(400).json({ error: "Escreva uma mensagem de até 4.000 caracteres." });
+  const employeeId = request.authenticatedEmployee.employee_id;
+  const isHrAdmin = request.authenticatedEmployee.is_hr_admin === true;
+  const client = await pool.connect();
+  try {
+    await client.query("BEGIN");
+    const supportRequest = await client.query(`SELECT employee_support_request_id, employee_id, subject, description FROM public.employee_support_requests WHERE employee_support_request_id = $1 AND ($2::boolean OR employee_id = $3) FOR UPDATE`, [requestId, isHrAdmin, employeeId]);
+    if (!supportRequest.rowCount) { await client.query("ROLLBACK"); return response.status(404).json({ error: "Pedido não encontrado." }); }
+    const requesterId = supportRequest.rows[0].employee_id;
+    const openingRequest = `${supportRequest.rows[0].subject}\n\n${supportRequest.rows[0].description}`;
+    const createdOpeningMessage = await ensureSupportRequestOpeningMessage(client, requestId, requesterId, supportRequest.rows[0].subject, supportRequest.rows[0].description);
+    const duplicateOpeningMessage = createdOpeningMessage && employeeId === requesterId && body === openingRequest;
+    const inserted = duplicateOpeningMessage
+      ? await client.query(`
+          SELECT employee_support_request_message_id AS id, sender_employee_id AS "senderEmployeeId", body, sent_at AS "sentAt"
+          FROM public.employee_support_request_messages
+          WHERE employee_support_request_id = $1
+          ORDER BY sent_at, employee_support_request_message_id LIMIT 1
+        `, [requestId])
+      : await client.query(`
+          INSERT INTO public.employee_support_request_messages (employee_support_request_id, sender_employee_id, body)
+          VALUES ($1, $2, $3)
+          RETURNING employee_support_request_message_id AS id, sender_employee_id AS "senderEmployeeId", body, sent_at AS "sentAt"
+        `, [requestId, employeeId, body]);
+    await client.query(`UPDATE public.employee_support_requests SET status = CASE WHEN $2 AND status = 'open' THEN 'in_progress' ELSE status END, follow_up_note = CASE WHEN $2 AND follow_up_note = $4 THEN NULL ELSE follow_up_note END, handled_by_employee_id = CASE WHEN $2 THEN $3 ELSE handled_by_employee_id END, updated_at = CURRENT_TIMESTAMP WHERE employee_support_request_id = $1`, [requestId, isHrAdmin, employeeId, body]);
+    await client.query("COMMIT");
+    return response.status(201).json({ ...inserted.rows[0], senderName: request.authenticatedEmployee.full_name, isMine: inserted.rows[0].senderEmployeeId === employeeId });
+  } catch (error) {
+    await client.query("ROLLBACK").catch(() => undefined);
+    console.error("Could not send support request chat message:", error.message);
+    return response.status(500).json({ error: "Não foi possível enviar a mensagem." });
+  } finally { client.release(); }
+});
+
+app.post("/api/me/plan/tasks/:taskId/check-in", requireAuthenticated, async (request, response) => {
+  const taskId = parseAccountId(request.params.taskId);
+  const feeling = request.body?.feeling;
+  const comment = typeof request.body?.comment === "string" ? request.body.comment.trim() : "";
+  const difficulties = typeof request.body?.difficulties === "string" ? request.body.difficulties.trim() : "";
+  const supportRequest = typeof request.body?.supportRequest === "string" ? request.body.supportRequest.trim() : "";
+  const wantsSupport = request.body?.needsSupport === true;
+  if (!taskId || !["great", "good", "neutral", "struggling"].includes(feeling) || comment.length > 2000 || difficulties.length > 2000 || supportRequest.length > 2000) {
+    return response.status(400).json({ error: "Revise como está se sentindo e mantenha cada resposta em até 2.000 caracteres." });
+  }
+  const employeeId = request.authenticatedEmployee.employee_id;
+  const needsSupport = wantsSupport || feeling === "struggling" || Boolean(difficulties || supportRequest);
+  const client = await pool.connect();
+  try {
+    await client.query("BEGIN");
+    const task = await client.query(`
+      SELECT plan_task.employee_plan_task_id FROM public.employee_plan_tasks AS plan_task
+      WHERE plan_task.employee_plan_task_id = $1 AND plan_task.employee_id = $2 AND plan_task.task_type = 'checkin'
+        AND lower(plan_task.category || ' ' || plan_task.title) NOT LIKE '%feedback%'
+    `, [taskId, employeeId]);
+    if (!task.rowCount) { await client.query("ROLLBACK"); return response.status(404).json({ error: "Tarefa de check-in não encontrada na sua jornada." }); }
+    const result = await client.query(`
+      INSERT INTO public.check_ins
+        (employee_id, employee_plan_task_id, feeling, comment, difficulties, support_request, needs_support, follow_up_status)
+      VALUES ($1, $2, $3, NULLIF($4, ''), NULLIF($5, ''), NULLIF($6, ''), $7, $8)
+      RETURNING check_in_id AS id, feeling, comment, difficulties, support_request AS "supportRequest",
+        needs_support AS "needsSupport", follow_up_status AS "followUpStatus", submitted_at AS "submittedAt"
+    `, [employeeId, taskId, feeling, comment, difficulties, supportRequest, needsSupport, needsSupport ? "open" : "not_needed"]);
+    await client.query(`
+      INSERT INTO public.employee_plan_task_progress (employee_plan_task_id, employee_id, is_completed, completed_at, updated_at)
+      VALUES ($1, $2, TRUE, CURRENT_TIMESTAMP, CURRENT_TIMESTAMP)
+      ON CONFLICT (employee_plan_task_id) DO UPDATE SET is_completed = TRUE, completed_at = CURRENT_TIMESTAMP, updated_at = CURRENT_TIMESTAMP
+    `, [taskId, employeeId]);
+    await client.query("COMMIT");
+    return response.status(201).json(result.rows[0]);
+  } catch (error) {
+    await client.query("ROLLBACK").catch(() => undefined);
+    if (error.code === "23505") return response.status(409).json({ error: "Este check-in já foi enviado." });
+    console.error("Could not save employee check-in:", error.message);
+    return response.status(500).json({ error: "Não foi possível salvar seu check-in." });
+  } finally { client.release(); }
+});
+
+app.post("/api/me/plan/tasks/:taskId/feedback", requireAuthenticated, async (request, response) => {
+  const taskId = parseAccountId(request.params.taskId);
+  const rating = Number(request.body?.rating);
+  const whatWentWell = typeof request.body?.whatWentWell === "string" ? request.body.whatWentWell.trim() : "";
+  const whatToImprove = typeof request.body?.whatToImprove === "string" ? request.body.whatToImprove.trim() : "";
+  if (!taskId || !Number.isInteger(rating) || rating < 1 || rating > 5 || whatWentWell.length > 2000 || whatToImprove.length > 2000) {
+    return response.status(400).json({ error: "Informe uma nota de 1 a 5 e respostas de até 2.000 caracteres." });
+  }
+  const employeeId = request.authenticatedEmployee.employee_id;
+  const client = await pool.connect();
+  try {
+    await client.query("BEGIN");
+    const task = await client.query(`
+      SELECT plan_task.employee_plan_task_id FROM public.employee_plan_tasks AS plan_task
+      WHERE plan_task.employee_plan_task_id = $1 AND plan_task.employee_id = $2 AND plan_task.task_type = 'checkin'
+        AND lower(plan_task.category || ' ' || plan_task.title) LIKE '%feedback%'
+    `, [taskId, employeeId]);
+    if (!task.rowCount) { await client.query("ROLLBACK"); return response.status(404).json({ error: "Tarefa de feedback não encontrada na sua jornada." }); }
+    await client.query("SELECT employee_id FROM public.employees WHERE employee_id = $1 FOR UPDATE", [employeeId]);
+    let onboarding = await client.query(`SELECT onboarding_id FROM public.onboardings WHERE employee_id = $1 AND status = 'active' ORDER BY updated_at DESC, onboarding_id DESC LIMIT 1`, [employeeId]);
+    if (!onboarding.rowCount) onboarding = await client.query(`
+      INSERT INTO public.onboardings (employee_id, start_date, status)
+      SELECT employee_id, created_at::date, 'active' FROM public.employees WHERE employee_id = $1
+      RETURNING onboarding_id
+    `, [employeeId]);
+    const result = await client.query(`
+      INSERT INTO public.onboarding_feedback (onboarding_id, employee_id, employee_plan_task_id, rating, what_went_well, what_to_improve)
+      VALUES ($1, $2, $3, $4, NULLIF($5, ''), NULLIF($6, ''))
+      RETURNING onboarding_feedback_id AS id, rating, what_went_well AS "whatWentWell",
+        what_to_improve AS "whatToImprove", submitted_at AS "submittedAt"
+    `, [onboarding.rows[0].onboarding_id, employeeId, taskId, rating, whatWentWell, whatToImprove]);
+    await client.query(`
+      INSERT INTO public.employee_plan_task_progress (employee_plan_task_id, employee_id, is_completed, completed_at, updated_at)
+      VALUES ($1, $2, TRUE, CURRENT_TIMESTAMP, CURRENT_TIMESTAMP)
+      ON CONFLICT (employee_plan_task_id) DO UPDATE SET is_completed = TRUE, completed_at = CURRENT_TIMESTAMP, updated_at = CURRENT_TIMESTAMP
+    `, [taskId, employeeId]);
+    await client.query("COMMIT");
+    return response.status(201).json(result.rows[0]);
+  } catch (error) {
+    await client.query("ROLLBACK").catch(() => undefined);
+    if (error.code === "23505") return response.status(409).json({ error: "O feedback deste onboarding já foi enviado." });
+    console.error("Could not save onboarding feedback:", error.message);
+    return response.status(500).json({ error: "Não foi possível salvar seu feedback." });
+  } finally { client.release(); }
+});
+
+app.get("/api/hr/onboarding-support", requireHr, async (_request, response) => {
+  try {
+    const [checkIns, requests, feedback] = await Promise.all([
+      pool.query(`SELECT checkin.check_in_id AS id, checkin.employee_id AS "employeeId", employee.full_name AS "employeeName", employee.email AS "employeeEmail", employee.job_title AS "jobTitle", department.name AS department, task.title AS "taskTitle", checkin.feeling, checkin.comment, checkin.difficulties, checkin.support_request AS "supportRequest", checkin.needs_support AS "needsSupport", checkin.follow_up_status AS "followUpStatus", checkin.submitted_at AS "submittedAt" FROM public.check_ins AS checkin INNER JOIN public.employees AS employee ON employee.employee_id = checkin.employee_id LEFT JOIN public.departments AS department ON department.department_id = employee.department_id LEFT JOIN public.employee_plan_tasks AS task ON task.employee_plan_task_id = checkin.employee_plan_task_id ORDER BY checkin.needs_support DESC, checkin.submitted_at DESC`),
+      pool.query(`SELECT request.employee_support_request_id AS id, request.employee_id AS "employeeId", employee.full_name AS "employeeName", employee.email AS "employeeEmail", employee.job_title AS "jobTitle", department.name AS department, request.category, request.subject, request.description, request.status, request.follow_up_note AS "followUpNote", request.submitted_at AS "submittedAt", request.updated_at AS "updatedAt", EXISTS (SELECT 1 FROM public.employee_support_request_messages AS message WHERE message.employee_support_request_id = request.employee_support_request_id) AS "hasChat" FROM public.employee_support_requests AS request INNER JOIN public.employees AS employee ON employee.employee_id = request.employee_id LEFT JOIN public.departments AS department ON department.department_id = employee.department_id ORDER BY CASE request.status WHEN 'open' THEN 0 WHEN 'in_progress' THEN 1 ELSE 2 END, request.submitted_at DESC`),
+      pool.query(`SELECT feedback.onboarding_feedback_id AS id, feedback.employee_id AS "employeeId", employee.full_name AS "employeeName", employee.email AS "employeeEmail", employee.job_title AS "jobTitle", department.name AS department, feedback.rating, feedback.what_went_well AS "whatWentWell", feedback.what_to_improve AS "whatToImprove", feedback.submitted_at AS "submittedAt" FROM public.onboarding_feedback AS feedback INNER JOIN public.employees AS employee ON employee.employee_id = feedback.employee_id LEFT JOIN public.departments AS department ON department.department_id = employee.department_id ORDER BY feedback.submitted_at DESC`),
+    ]);
+    return response.json({ checkIns: checkIns.rows, requests: requests.rows, feedback: feedback.rows });
+  } catch (error) {
+    console.error("Could not load HR onboarding support:", error.message);
+    return response.status(500).json({ error: "Não foi possível carregar os acompanhamentos." });
+  }
+});
+
+app.patch("/api/hr/check-ins/:checkInId", requireHr, async (request, response) => {
+  const checkInId = parseAccountId(request.params.checkInId);
+  const status = request.body?.status;
+  if (!checkInId || !["open", "in_progress", "resolved"].includes(status)) return response.status(400).json({ error: "Informe um status válido para o acompanhamento." });
+  try {
+    const result = await pool.query(`UPDATE public.check_ins SET follow_up_status = $2, needs_support = TRUE WHERE check_in_id = $1 RETURNING check_in_id AS id, follow_up_status AS status`, [checkInId, status]);
+    if (!result.rowCount) return response.status(404).json({ error: "Check-in não encontrado." });
+    return response.json(result.rows[0]);
+  } catch (error) {
+    console.error("Could not update check-in follow-up:", error.message);
+    return response.status(500).json({ error: "Não foi possível atualizar o acompanhamento." });
+  }
+});
+
+app.patch("/api/hr/support-requests/:requestId", requireHr, async (request, response) => {
+  const requestId = parseAccountId(request.params.requestId);
+  const status = request.body?.status;
+  const followUpNote = typeof request.body?.followUpNote === "string" ? request.body.followUpNote.trim() : "";
+  if (!requestId || !["open", "in_progress", "resolved"].includes(status) || followUpNote.length > 1000) return response.status(400).json({ error: "Informe um status válido e uma observação de até 1.000 caracteres." });
+  try {
+    const result = await pool.query(`UPDATE public.employee_support_requests SET status = $2, follow_up_note = NULLIF($3, ''), handled_by_employee_id = $4, updated_at = CURRENT_TIMESTAMP WHERE employee_support_request_id = $1 RETURNING employee_support_request_id AS id, status, follow_up_note AS "followUpNote", updated_at AS "updatedAt"`, [requestId, status, followUpNote, request.authenticatedEmployee.employee_id]);
+    if (!result.rowCount) return response.status(404).json({ error: "Pedido não encontrado." });
+    return response.json(result.rows[0]);
+  } catch (error) {
+    console.error("Could not update employee support request:", error.message);
+    return response.status(500).json({ error: "Não foi possível atualizar o pedido." });
   }
 });
 
@@ -911,10 +1259,20 @@ app.get("/api/hr/accounts", requireHr, async (_request, response) => {
           WHERE membership.employee_id = employee.employee_id AND team.is_active IS TRUE), '[]'::json) AS teams,
         employee.manager_employee_id AS "managerEmployeeId",
         manager.full_name AS "managerName", employee.is_active AS "isActive",
+        onboarding.mentor_employee_id AS "mentorEmployeeId",
+        mentor.full_name AS "mentorName",
         (SELECT COUNT(*)::int FROM public.employee_plan_tasks AS plan_task
           WHERE plan_task.employee_id = employee.employee_id) AS "planTaskCount"
       FROM public.employees AS employee
       LEFT JOIN public.employees AS manager ON manager.employee_id = employee.manager_employee_id
+      LEFT JOIN LATERAL (
+        SELECT onboarding.mentor_employee_id
+        FROM public.onboardings AS onboarding
+        WHERE onboarding.employee_id = employee.employee_id AND onboarding.status = 'active'
+        ORDER BY onboarding.updated_at DESC, onboarding.onboarding_id DESC
+        LIMIT 1
+      ) AS onboarding ON TRUE
+      LEFT JOIN public.employees AS mentor ON mentor.employee_id = onboarding.mentor_employee_id
       WHERE employee.is_hr_admin IS FALSE
       ORDER BY employee.full_name;
     `);
@@ -922,6 +1280,79 @@ app.get("/api/hr/accounts", requireHr, async (_request, response) => {
   } catch (error) {
     console.error("Could not load HR accounts:", error.message);
     return response.status(500).json({ error: "Não foi possível carregar as contas." });
+  }
+});
+
+app.get("/api/hr/overdue-count", requireHr, async (_request, response) => {
+  try {
+    const result = await pool.query(`
+      WITH employee_tasks AS (
+        SELECT stage.stage_code,
+          COALESCE(onboarding.start_date, employee.created_at::date) + plan_task.due_offset_days AS due_date,
+          COALESCE(progress.is_completed, FALSE) AS is_completed
+        FROM public.employee_plan_tasks AS plan_task
+        INNER JOIN public.stage_templates AS stage ON stage.stage_template_id = plan_task.stage_template_id
+        INNER JOIN public.employees AS employee ON employee.employee_id = plan_task.employee_id
+        LEFT JOIN public.employee_plan_task_progress AS progress
+          ON progress.employee_plan_task_id = plan_task.employee_plan_task_id AND progress.employee_id = plan_task.employee_id
+        LEFT JOIN LATERAL (
+          SELECT onboarding.start_date
+          FROM public.onboardings AS onboarding
+          WHERE onboarding.employee_id = employee.employee_id AND onboarding.status = 'active'
+          ORDER BY onboarding.updated_at DESC, onboarding.onboarding_id DESC
+          LIMIT 1
+        ) AS onboarding ON TRUE
+        WHERE employee.is_active IS TRUE AND employee.is_hr_admin IS FALSE
+      )
+      SELECT COUNT(*)::int AS count,
+        COUNT(*) FILTER (WHERE stage_code = 'pre-entry')::int AS "preEntryCount"
+      FROM employee_tasks
+      WHERE is_completed IS FALSE AND due_date < CURRENT_DATE
+    `);
+    return response.json(result.rows[0] ?? { count: 0, preEntryCount: 0 });
+  } catch (error) {
+    console.error("Could not load HR overdue task count:", error.message);
+    return response.status(500).json({ error: "Não foi possível carregar a quantidade de itens atrasados." });
+  }
+});
+
+app.get("/api/hr/overdue-tasks", requireHr, async (_request, response) => {
+  try {
+    const result = await pool.query(`
+      SELECT employee.employee_id AS "employeeId", employee.full_name AS "employeeName",
+        employee.email AS "employeeEmail", employee.job_title AS "employeeJobTitle",
+        stage.stage_template_id AS "stageTemplateId", stage.stage_code AS "stageCode", stage.name AS "stageName",
+        plan_task.employee_plan_task_id AS "taskId", plan_task.title AS "taskTitle",
+        plan_task.due_offset_days AS "dueOffsetDays", owner.full_name AS "ownerName",
+        plan_task.owner_role AS "ownerRole",
+        COALESCE(onboarding.start_date, employee.created_at::date) + plan_task.due_offset_days AS "dueDate",
+        CURRENT_DATE - (COALESCE(onboarding.start_date, employee.created_at::date) + plan_task.due_offset_days) AS "overdueDays",
+        COUNT(*) OVER()::int AS "totalCount"
+      FROM public.employee_plan_tasks AS plan_task
+      INNER JOIN public.employees AS employee ON employee.employee_id = plan_task.employee_id
+      INNER JOIN public.stage_templates AS stage ON stage.stage_template_id = plan_task.stage_template_id
+      LEFT JOIN public.employees AS owner ON owner.employee_id = plan_task.owner_employee_id
+      LEFT JOIN public.employee_plan_task_progress AS progress
+        ON progress.employee_plan_task_id = plan_task.employee_plan_task_id AND progress.employee_id = plan_task.employee_id
+      LEFT JOIN LATERAL (
+        SELECT onboarding.start_date
+        FROM public.onboardings AS onboarding
+        WHERE onboarding.employee_id = employee.employee_id AND onboarding.status = 'active'
+        ORDER BY onboarding.updated_at DESC, onboarding.onboarding_id DESC
+        LIMIT 1
+      ) AS onboarding ON TRUE
+      WHERE employee.is_active IS TRUE AND employee.is_hr_admin IS FALSE
+        AND COALESCE(progress.is_completed, FALSE) IS FALSE
+        AND COALESCE(onboarding.start_date, employee.created_at::date) + plan_task.due_offset_days < CURRENT_DATE
+      ORDER BY (stage.stage_code = 'pre-entry') DESC,
+        COALESCE(onboarding.start_date, employee.created_at::date) + plan_task.due_offset_days ASC,
+        employee.full_name, plan_task.title
+      LIMIT 100
+    `);
+    return response.json(result.rows);
+  } catch (error) {
+    console.error("Could not load HR overdue tasks:", error.message);
+    return response.status(500).json({ error: "Não foi possível carregar os itens atrasados das jornadas." });
   }
 });
 
@@ -1353,6 +1784,7 @@ app.post("/api/hr/accounts", requireHr, async (request, response) => {
   const teamIds = parseOrganizationIds(request.body?.teamIds);
   const departmentId = departmentIds?.[0] ?? null;
   const managerEmployeeId = request.body?.managerEmployeeId === "" || request.body?.managerEmployeeId == null ? null : Number(request.body.managerEmployeeId);
+  const mentorEmployeeId = request.body?.mentorEmployeeId === "" || request.body?.mentorEmployeeId == null ? null : Number(request.body.mentorEmployeeId);
   const password = typeof request.body?.password === "string" ? request.body.password : "";
   if (!name || name.length > 160 || !email || email.length > 254 || !/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(email)) {
     return response.status(400).json({ error: "Informe nome e um e-mail válido." });
@@ -1364,6 +1796,9 @@ app.post("/api/hr/accounts", requireHr, async (request, response) => {
   if (managerEmployeeId !== null && (!Number.isSafeInteger(managerEmployeeId) || managerEmployeeId <= 0)) {
     return response.status(400).json({ error: "Selecione uma liderança válida." });
   }
+  if (mentorEmployeeId !== null && (!Number.isSafeInteger(mentorEmployeeId) || mentorEmployeeId <= 0 || mentorEmployeeId === managerEmployeeId)) {
+    return response.status(400).json({ error: "Selecione uma pessoa mentora diferente da liderança direta." });
+  }
 
   try {
     const organizationError = await validateOrganizationIds(departmentIds, teamIds);
@@ -1371,6 +1806,10 @@ app.post("/api/hr/accounts", requireHr, async (request, response) => {
     if (managerEmployeeId !== null) {
       const manager = await pool.query("SELECT 1 FROM public.employees WHERE employee_id = $1 AND is_active IS TRUE AND is_hr_admin IS FALSE", [managerEmployeeId]);
       if (!manager.rowCount) return response.status(400).json({ error: "A liderança selecionada não existe ou está inativa." });
+    }
+    if (mentorEmployeeId !== null) {
+      const mentor = await pool.query("SELECT 1 FROM public.employees WHERE employee_id = $1 AND is_active IS TRUE AND is_hr_admin IS FALSE", [mentorEmployeeId]);
+      if (!mentor.rowCount) return response.status(400).json({ error: "A pessoa mentora selecionada não existe ou está inativa." });
     }
     const passwordHash = await hashPassword(password);
     const client = await pool.connect();
@@ -1385,6 +1824,14 @@ app.post("/api/hr/accounts", requireHr, async (request, response) => {
         department_id AS "departmentId", manager_employee_id AS "managerEmployeeId", TRUE AS "isActive"
       `, [email, name, jobTitle, departmentId, managerEmployeeId, passwordHash]);
       await saveEmployeeOrganization(client, result.rows[0].id, departmentIds, teamIds);
+      if (mentorEmployeeId !== null) {
+        await client.query(`
+          INSERT INTO public.onboardings (employee_id, mentor_employee_id, start_date, status)
+          SELECT employee.employee_id, $2, employee.created_at::date, 'active'
+          FROM public.employees AS employee
+          WHERE employee.employee_id = $1
+        `, [result.rows[0].id, mentorEmployeeId]);
+      }
       await client.query("COMMIT");
       transactionStarted = false;
       return response.status(201).json({ ...result.rows[0], departmentIds, teamIds });
@@ -1411,6 +1858,7 @@ app.patch("/api/hr/accounts/:accountId", requireHr, async (request, response) =>
   const teamIds = parseOrganizationIds(request.body?.teamIds);
   const departmentId = departmentIds?.[0] ?? null;
   const managerEmployeeId = request.body?.managerEmployeeId === "" || request.body?.managerEmployeeId == null ? null : Number(request.body.managerEmployeeId);
+  const mentorEmployeeId = request.body?.mentorEmployeeId === "" || request.body?.mentorEmployeeId == null ? null : Number(request.body.mentorEmployeeId);
   const isActive = request.body?.isActive;
   if (!name || name.length > 160 || !email || email.length > 254 || !/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(email)) {
     return response.status(400).json({ error: "Informe nome e um e-mail válido." });
@@ -1418,6 +1866,7 @@ app.patch("/api/hr/accounts/:accountId", requireHr, async (request, response) =>
   if (jobTitle.length > 120) return response.status(400).json({ error: "O cargo pode ter até 120 caracteres." });
   if (typeof isActive !== "boolean") return response.status(400).json({ error: "Informe se a conta está ativa." });
   if (managerEmployeeId !== null && (!Number.isSafeInteger(managerEmployeeId) || managerEmployeeId <= 0 || managerEmployeeId === accountId)) return response.status(400).json({ error: "Selecione uma liderança válida." });
+  if (mentorEmployeeId !== null && (!Number.isSafeInteger(mentorEmployeeId) || mentorEmployeeId <= 0 || mentorEmployeeId === accountId || mentorEmployeeId === managerEmployeeId)) return response.status(400).json({ error: "Selecione uma pessoa mentora diferente do funcionário e da liderança direta." });
   try {
     const organizationError = await validateOrganizationIds(departmentIds, teamIds);
     if (organizationError) return response.status(400).json({ error: organizationError });
@@ -1426,6 +1875,10 @@ app.patch("/api/hr/accounts/:accountId", requireHr, async (request, response) =>
     if (managerEmployeeId !== null) {
       const manager = await pool.query("SELECT 1 FROM public.employees WHERE employee_id = $1 AND is_hr_admin IS FALSE", [managerEmployeeId]);
       if (!manager.rowCount) return response.status(400).json({ error: "A liderança selecionada não existe ou está inativa." });
+    }
+    if (mentorEmployeeId !== null) {
+      const mentor = await pool.query("SELECT 1 FROM public.employees WHERE employee_id = $1 AND is_active IS TRUE AND is_hr_admin IS FALSE", [mentorEmployeeId]);
+      if (!mentor.rowCount) return response.status(400).json({ error: "A pessoa mentora selecionada não existe ou está inativa." });
     }
     const client = await pool.connect();
     let transactionStarted = false;
@@ -1441,6 +1894,26 @@ app.patch("/api/hr/accounts/:accountId", requireHr, async (request, response) =>
         employee.manager_employee_id AS "managerEmployeeId", employee.is_active AS "isActive"
       `, [accountId, email, name, jobTitle, departmentId, managerEmployeeId, isActive]);
       await saveEmployeeOrganization(client, accountId, departmentIds, teamIds);
+      const activeOnboarding = await client.query(`
+        UPDATE public.onboardings AS onboarding
+        SET mentor_employee_id = $2, updated_at = CURRENT_TIMESTAMP
+        WHERE onboarding.onboarding_id = (
+          SELECT candidate.onboarding_id
+          FROM public.onboardings AS candidate
+          WHERE candidate.employee_id = $1 AND candidate.status = 'active'
+          ORDER BY candidate.updated_at DESC, candidate.onboarding_id DESC
+          LIMIT 1
+        )
+        RETURNING onboarding.onboarding_id
+      `, [accountId, mentorEmployeeId]);
+      if (!activeOnboarding.rowCount && mentorEmployeeId !== null) {
+        await client.query(`
+          INSERT INTO public.onboardings (employee_id, mentor_employee_id, start_date, status)
+          SELECT employee.employee_id, $2, employee.created_at::date, 'active'
+          FROM public.employees AS employee
+          WHERE employee.employee_id = $1
+        `, [accountId, mentorEmployeeId]);
+      }
       await client.query("COMMIT");
       transactionStarted = false;
       return response.json({ ...result.rows[0], departmentIds, teamIds });
@@ -1694,6 +2167,54 @@ app.get("/api/me/profile-photo", requireAuthenticated, async (request, response)
     if (error.code === "ENOENT" || error.code === "BlobNotFound") return response.status(404).json({ error: "Foto de perfil não encontrada." });
     console.error("Could not load profile photo:", error.message);
     return response.status(500).json({ error: "Não foi possível carregar a foto de perfil." });
+  }
+});
+
+app.get("/api/me/mentor", requireAuthenticated, async (request, response) => {
+  try {
+    const result = await pool.query(`
+      SELECT mentor.employee_id AS id, mentor.full_name AS name, mentor.email,
+        mentor.job_title AS "jobTitle", department.name AS department
+      FROM public.onboardings AS onboarding
+      INNER JOIN public.employees AS mentor ON mentor.employee_id = onboarding.mentor_employee_id
+      LEFT JOIN public.departments AS department ON department.department_id = mentor.department_id
+      WHERE onboarding.employee_id = $1 AND onboarding.status = 'active'
+        AND mentor.is_active IS TRUE
+      ORDER BY onboarding.updated_at DESC, onboarding.onboarding_id DESC
+      LIMIT 1
+    `, [request.authenticatedEmployee.employee_id]);
+    return response.json(result.rows[0] ?? null);
+  } catch (error) {
+    console.error("Could not load employee mentor:", error.message);
+    return response.status(500).json({ error: "Não foi possível carregar sua pessoa mentora." });
+  }
+});
+
+app.get("/api/people/new", requireAuthenticated, async (request, response) => {
+  try {
+    const result = await pool.query(`
+      SELECT employee.employee_id AS id, employee.full_name AS name, employee.email,
+        employee.job_title AS "jobTitle", department.name AS department,
+        COALESCE(onboarding.start_date, employee.created_at::date) AS "startDate"
+      FROM public.employees AS employee
+      LEFT JOIN public.departments AS department ON department.department_id = employee.department_id
+      LEFT JOIN LATERAL (
+        SELECT onboarding.start_date
+        FROM public.onboardings AS onboarding
+        WHERE onboarding.employee_id = employee.employee_id AND onboarding.status = 'active'
+        ORDER BY onboarding.updated_at DESC, onboarding.onboarding_id DESC
+        LIMIT 1
+      ) AS onboarding ON TRUE
+      WHERE employee.is_active IS TRUE AND employee.is_hr_admin IS FALSE
+        AND employee.employee_id <> $1
+        AND COALESCE(onboarding.start_date, employee.created_at::date) >= CURRENT_DATE - INTERVAL '90 days'
+      ORDER BY COALESCE(onboarding.start_date, employee.created_at::date) DESC, employee.full_name
+      LIMIT 12
+    `, [request.authenticatedEmployee.employee_id]);
+    return response.json(result.rows);
+  } catch (error) {
+    console.error("Could not load new employee profiles:", error.message);
+    return response.status(500).json({ error: "Não foi possível carregar os novos perfis." });
   }
 });
 
