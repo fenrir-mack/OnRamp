@@ -1,19 +1,22 @@
 import { useEffect, useState } from "react";
 import type { FormEvent } from "react";
+import EmployeeAvatar from "../components/EmployeeAvatar";
 
 type PreparationIssue = { id: number; description: string; status: "open" | "in_review" | "resolved"; resolutionNote: string | null; createdAt: string };
-type PreparationHistoryEntry = { id: number; actorName: string; action: string; newValue: string | null; createdAt: string };
+type PreparationHistoryEntry = { id: number; actorName: string; action: string; previousValue: string | null; newValue: string | null; comment: string | null; createdAt: string };
 type PreparationTask = {
   id: number; employeeId: number; employeeName: string; title: string; description: string; category: string;
   ownerEmployeeId: number | null; ownerName: string | null; ownerRole: string; departmentId: number | null;
   department: string | null; dueOffsetDays: number; startDate: string; dueDate: string;
-  status: "not_started" | "in_progress" | "waiting_third_party" | "ready";
-  carrier: string | null; trackingCode: string | null; trackingUrl: string | null; openIssueCount: number; issues: PreparationIssue[]; history: PreparationHistoryEntry[];
+  status: "not_started" | "in_progress" | "waiting_third_party" | "blocked" | "ready" | "cancelled" | "not_applicable";
+  trackingUrl: string | null; openIssueCount: number; issues: PreparationIssue[]; history: PreparationHistoryEntry[];
 };
 
 const statusLabels: Record<PreparationTask["status"], string> = {
-  not_started: "A iniciar", in_progress: "Em andamento", waiting_third_party: "Aguardando terceiro", ready: "Pronto",
+  not_started: "A iniciar", in_progress: "Em andamento", waiting_third_party: "Aguardando terceiro", blocked: "Bloqueado", ready: "Pronto", cancelled: "Cancelado", not_applicable: "Não se aplica",
 };
+const preparationCategoryOrder = ["Jurídico", "TI", "Equipamento", "Contas e acessos", "Financeiro", "Pessoas & Cultura", "Geral"];
+const closedStatuses = new Set<PreparationTask["status"]>(["ready", "cancelled", "not_applicable"]);
 
 function PreparationView() {
   const [tasks, setTasks] = useState<PreparationTask[]>([]);
@@ -21,6 +24,8 @@ function PreparationView() {
   const [error, setError] = useState("");
   const [notice, setNotice] = useState("");
   const [savingId, setSavingId] = useState<number | null>(null);
+  const [selectedEmployeeId, setSelectedEmployeeId] = useState<number | null>(null);
+  const [statusEdits, setStatusEdits] = useState<Record<number, { status: PreparationTask["status"]; comment: string }>>({});
 
   useEffect(() => {
     let active = true;
@@ -31,29 +36,42 @@ function PreparationView() {
     return () => { active = false; };
   }, []);
 
-  async function updateStatus(task: PreparationTask, status: PreparationTask["status"]) {
+  async function updateStatus(task: PreparationTask, status: PreparationTask["status"], comment: string) {
     setSavingId(task.id); setError(""); setNotice("");
     try {
-      const response = await fetch(`/api/preparation/tasks/${task.id}/status`, { method: "PATCH", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ status }) });
+      const response = await fetch(`/api/preparation/tasks/${task.id}/status`, { method: "PATCH", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ status, comment }) });
       const result = await response.json();
       if (!response.ok) throw new Error(result.error ?? "Não foi possível atualizar o estado.");
-      setTasks((current) => current.map((item) => item.id === task.id ? { ...item, status: result.status } : item));
+      setTasks((current) => current.map((item) => item.id === task.id ? { ...item, status: result.status, history: result.history ? [result.history, ...item.history] : item.history } : item));
+      setStatusEdits((current) => { const next = { ...current }; delete next[task.id]; return next; });
       setNotice("Estado do item atualizado.");
     } catch (saveError) { setError(saveError instanceof Error ? saveError.message : "Não foi possível atualizar o estado."); }
     finally { setSavingId(null); }
   }
 
-  async function saveShipment(event: FormEvent<HTMLFormElement>, task: PreparationTask) {
+  async function claimTask(task: PreparationTask) {
+    setSavingId(task.id); setError(""); setNotice("");
+    try {
+      const response = await fetch(`/api/preparation/tasks/${task.id}/claim`, { method: "POST" });
+      const result = await response.json();
+      if (!response.ok) throw new Error(result.error ?? "Não foi possível assumir a tarefa.");
+      setTasks((current) => current.map((item) => item.id === task.id ? { ...item, ownerEmployeeId: result.ownerEmployeeId, ownerName: result.ownerName, history: result.history ? [result.history, ...item.history] : item.history } : item));
+      setNotice("Você assumiu esta tarefa.");
+    } catch (claimError) { setError(claimError instanceof Error ? claimError.message : "Não foi possível assumir a tarefa."); }
+    finally { setSavingId(null); }
+  }
+
+  async function saveTrackingLink(event: FormEvent<HTMLFormElement>, task: PreparationTask) {
     event.preventDefault();
     const form = new FormData(event.currentTarget);
     setSavingId(task.id); setError(""); setNotice("");
     try {
-      const data = { carrier: String(form.get("carrier") ?? ""), trackingCode: String(form.get("trackingCode") ?? ""), trackingUrl: String(form.get("trackingUrl") ?? "") };
+      const data = { trackingUrl: String(form.get("trackingUrl") ?? "") };
       const response = await fetch(`/api/preparation/tasks/${task.id}/shipment`, { method: "PATCH", headers: { "Content-Type": "application/json" }, body: JSON.stringify(data) });
       const result = await response.json();
       if (!response.ok) throw new Error(result.error ?? "Não foi possível salvar o rastreio.");
       setTasks((current) => current.map((item) => item.id === task.id ? { ...item, ...result } : item));
-      setNotice("Dados de entrega salvos.");
+      setNotice("Link de rastreio salvo.");
     } catch (saveError) { setError(saveError instanceof Error ? saveError.message : "Não foi possível salvar o rastreio."); }
     finally { setSavingId(null); }
   }
@@ -71,30 +89,101 @@ function PreparationView() {
     } catch (saveError) { setError(saveError instanceof Error ? saveError.message : "Não foi possível atualizar o problema."); }
   }
 
+  const today = new Date().toISOString().slice(0, 10);
+  function compareUrgency(left: PreparationTask, right: PreparationTask) {
+    const leftClosed = closedStatuses.has(left.status);
+    const rightClosed = closedStatuses.has(right.status);
+    if (leftClosed !== rightClosed) return leftClosed ? 1 : -1;
+    const leftOverdue = !leftClosed && left.dueDate.slice(0, 10) < today;
+    const rightOverdue = !rightClosed && right.dueDate.slice(0, 10) < today;
+    if (leftOverdue !== rightOverdue) return leftOverdue ? -1 : 1;
+    const leftNotStarted = left.status === "not_started";
+    const rightNotStarted = right.status === "not_started";
+    if (leftNotStarted !== rightNotStarted) return leftNotStarted ? -1 : 1;
+    return left.dueDate.localeCompare(right.dueDate) || left.title.localeCompare(right.title, "pt-BR");
+  }
+  const peopleGroups = [...tasks.reduce((groups, task) => {
+    const person = groups.get(task.employeeId) ?? { employeeId: task.employeeId, employeeName: task.employeeName, department: task.department, startDate: task.startDate, tasks: [] as PreparationTask[] };
+    person.tasks.push(task);
+    groups.set(task.employeeId, person);
+    return groups;
+  }, new Map<number, { employeeId: number; employeeName: string; department: string | null; startDate: string; tasks: PreparationTask[] }>()).values()]
+    .map((person) => {
+      const categories = [...new Set(person.tasks.map((task) => task.category.trim() || "Geral"))].map((category) => ({
+        category,
+        tasks: person.tasks.filter((task) => (task.category.trim() || "Geral") === category).sort(compareUrgency),
+      }));
+      categories.sort((left, right) => {
+        const urgency = compareUrgency(left.tasks[0], right.tasks[0]);
+        if (urgency) return urgency;
+        const leftOrder = preparationCategoryOrder.indexOf(left.category);
+        const rightOrder = preparationCategoryOrder.indexOf(right.category);
+        if (leftOrder >= 0 || rightOrder >= 0) return (leftOrder < 0 ? Number.MAX_SAFE_INTEGER : leftOrder) - (rightOrder < 0 ? Number.MAX_SAFE_INTEGER : rightOrder);
+        return left.category.localeCompare(right.category, "pt-BR");
+      });
+      return { ...person, categories, tasks: person.tasks.sort(compareUrgency), nextTask: person.tasks.find((task) => !closedStatuses.has(task.status)) };
+    })
+    .sort((left, right) => left.nextTask && right.nextTask ? compareUrgency(left.nextTask, right.nextTask) : left.nextTask ? -1 : right.nextTask ? 1 : left.employeeName.localeCompare(right.employeeName, "pt-BR"));
+  const selectedPerson = peopleGroups.find((person) => person.employeeId === selectedEmployeeId) ?? null;
+
   return <section>
-    <p className="eyebrow">Preparação da chegada</p>
-    <h1 className="mt-1 text-3xl font-extrabold tracking-tight">Novas admissões</h1>
-    <p className="mt-2 max-w-2xl text-sm leading-6 text-[#777a91]">Acompanhe os itens da empresa, os prazos, os problemas sinalizados e as entregas em trânsito.</p>
+    {!selectedPerson && <h1 className="text-3xl font-extrabold tracking-tight">Novas admissões</h1>}
     {error && <p className="mt-5 rounded-xl border border-red-200 bg-red-50 px-4 py-3 text-sm font-semibold text-red-700" role="alert">{error}</p>}
     {notice && <p className="mt-5 rounded-xl border border-emerald-200 bg-emerald-50 px-4 py-3 text-sm font-semibold text-emerald-700" role="status">{notice}</p>}
-    <div className="mt-6 space-y-4">{loading ? <p className="content-panel text-sm text-[#85879a]">Carregando a fila de preparação...</p> : tasks.map((task) => {
-      const overdue = task.status !== "ready" && task.dueDate.slice(0, 10) < new Date().toISOString().slice(0, 10);
-      return <article className="content-panel space-y-4" key={task.id}>
-        <div className="flex flex-wrap items-start justify-between gap-3"><div className="min-w-0"><div className="flex flex-wrap items-center gap-2"><h2 className="text-lg font-extrabold text-[#303249]">{task.title}</h2><span className="rounded-full bg-[#f0efff] px-2.5 py-1 text-[10px] font-bold text-[#5556d8]">{task.category}</span>{overdue && <span className="rounded-full bg-red-50 px-2.5 py-1 text-[10px] font-bold text-red-700">Atrasado</span>}</div><p className="mt-1 text-sm font-semibold text-[#55576d]">{task.employeeName} · {task.department ?? "Área não definida"}</p><p className="mt-1 text-xs text-[#85879a]">Entrada: {new Intl.DateTimeFormat("pt-BR", { dateStyle: "medium" }).format(new Date(`${task.startDate.slice(0, 10)}T00:00:00`))} · Prazo: {new Intl.DateTimeFormat("pt-BR", { dateStyle: "medium" }).format(new Date(`${task.dueDate.slice(0, 10)}T00:00:00`))} · Responsável: {task.ownerName ?? task.ownerRole}</p>{task.description && <p className="mt-2 text-sm leading-5 text-[#777a91]">{task.description}</p>}</div>
-          <label className="text-xs font-bold text-[#55576d]">Estado<select aria-label={`Estado: ${task.title}`} className="mt-1 block rounded-lg border border-[#e3e3ed] bg-white px-3 py-2 text-sm" disabled={savingId === task.id} value={task.status} onChange={(event) => void updateStatus(task, event.target.value as PreparationTask["status"])}>{Object.entries(statusLabels).map(([value, label]) => <option key={value} value={value}>{label}</option>)}</select></label>
-        </div>
-        <form className="grid gap-2 rounded-xl bg-[#fafafe] p-3 sm:grid-cols-4" onSubmit={(event) => void saveShipment(event, task)}><label className="text-[10px] font-bold text-[#777a91]">Transportadora<input className="mt-1 w-full rounded-lg border border-[#e3e3ed] bg-white px-2.5 py-2 text-xs" defaultValue={task.carrier ?? ""} name="carrier" maxLength={120} /></label><label className="text-[10px] font-bold text-[#777a91]">Código de rastreio<input className="mt-1 w-full rounded-lg border border-[#e3e3ed] bg-white px-2.5 py-2 text-xs" defaultValue={task.trackingCode ?? ""} name="trackingCode" maxLength={180} /></label><label className="text-[10px] font-bold text-[#777a91]">Link de rastreio<input className="mt-1 w-full rounded-lg border border-[#e3e3ed] bg-white px-2.5 py-2 text-xs" defaultValue={task.trackingUrl ?? ""} name="trackingUrl" type="url" maxLength={1000} /></label><button className="self-end rounded-lg border border-[#e3e3ed] px-3 py-2 text-xs font-bold text-[#5556d8] hover:bg-white" disabled={savingId === task.id} type="submit">Salvar entrega</button></form>
-        {task.trackingUrl && <a className="text-xs font-bold text-[#5556d8] underline" href={task.trackingUrl} rel="noreferrer" target="_blank">Acompanhar entrega {task.trackingCode ? `· ${task.trackingCode}` : ""}</a>}
-        {task.history.length > 0 && <details className="border-t border-[#eeeeF4] pt-3"><summary className="cursor-pointer text-xs font-bold text-[#5556d8]">Histórico de atualizações ({task.history.length})</summary><div className="mt-2 space-y-1">{task.history.map((entry) => <p className="text-xs text-[#777a91]" key={entry.id}>{new Intl.DateTimeFormat("pt-BR", { dateStyle: "short", timeStyle: "short" }).format(new Date(entry.createdAt))} · {entry.actorName} · {historyActionLabel(entry.action)}{historyValue(entry) ? `: ${historyValue(entry)}` : ""}</p>)}</div></details>}
-        {task.issues.length > 0 && <div className="space-y-2 border-t border-[#eeeeF4] pt-3"><strong className="text-sm">Problemas sinalizados ({task.openIssueCount})</strong>{task.issues.map((issue) => <div className="rounded-lg bg-[#fafafe] p-3" key={issue.id}><p className="text-sm text-[#45475d]">{issue.description}</p><div className="mt-2 flex flex-wrap items-center gap-2"><span className="text-xs text-[#85879a]">{issue.status === "resolved" ? `Resolvido: ${issue.resolutionNote ?? ""}` : issue.status === "in_review" ? "Em acompanhamento" : "Aberto"}</span>{issue.status !== "resolved" && <><button className="text-xs font-bold text-[#5556d8]" onClick={() => void updateIssue(issue, "in_review")} type="button">Acompanhar</button><button className="text-xs font-bold text-emerald-700" onClick={() => void updateIssue(issue, "resolved")} type="button">Marcar resolvido</button></>}</div></div>)}</div>}
-      </article>;
-    })}{!loading && tasks.length === 0 && <p className="content-panel text-sm text-[#85879a]">Ainda não há itens de preparação para as áreas que você pode acompanhar.</p>}</div>
+    <div className="mt-6 space-y-5">{loading ? <p className="content-panel text-sm text-[#85879a]">Carregando a fila de preparação...</p> : selectedPerson ? <>
+      <button className="rounded-xl border border-[#e3e3ed] bg-white px-4 py-2.5 text-sm font-bold text-[#5556d8] hover:bg-[#fafafe]" onClick={() => setSelectedEmployeeId(null)} type="button">← Voltar</button>
+      <article className="content-panel space-y-4" key={selectedPerson.employeeId}>
+      <header className="flex flex-wrap items-center gap-3 border-b border-[#eeeeF4] pb-4">
+        <EmployeeAvatar employeeId={selectedPerson.employeeId} name={selectedPerson.employeeName} className="grid size-12 shrink-0 place-items-center rounded-2xl bg-[#e9e8ff] text-sm font-extrabold text-[#5859d6]" />
+        <div className="min-w-0 flex-1"><h2 className="truncate text-lg font-extrabold text-[#303249]">{selectedPerson.employeeName}</h2><p className="mt-0.5 text-xs text-[#777a91]">{selectedPerson.department ?? "Área não definida"} · Entrada {formatDate(selectedPerson.startDate)}</p></div>
+        <div className="flex gap-2 text-xs"><span className="rounded-full bg-[#f5f5f9] px-3 py-1.5 font-bold text-[#55576d]">{selectedPerson.tasks.length} tarefas</span><span className="rounded-full bg-red-50 px-3 py-1.5 font-bold text-red-700">{selectedPerson.tasks.filter((task) => !closedStatuses.has(task.status) && task.dueDate.slice(0, 10) < today).length} atrasadas</span></div>
+      </header>
+      <div className="space-y-4">{selectedPerson.categories.map((category) => <section aria-label={`${category.category} — ${selectedPerson.employeeName}`} className="space-y-2" key={category.category}>
+        <h3 className="flex items-center gap-2 border-b border-[#eeeeF4] pb-2 text-xs font-extrabold uppercase tracking-wide text-[#686a80]"><span className="h-4 w-1 rounded-full bg-[#6566dc]" />{category.category}<span className="rounded-full bg-[#f0efff] px-2 py-0.5 text-[10px] text-[#5556d8]">{category.tasks.length}</span></h3>
+        {category.tasks.map((task) => {
+          const dueDate = task.dueDate.slice(0, 10);
+          const overdue = !closedStatuses.has(task.status) && dueDate < today;
+          const dueLabel = overdue ? `Atrasada · ${formatDate(dueDate)}` : dueDate === today ? "Vence hoje" : `Prazo ${formatDate(dueDate)}`;
+          return <article className="rounded-xl border border-[#ededf3] bg-white px-3 py-3 sm:px-4" key={task.id}>
+            <div className="flex flex-wrap items-center gap-3">
+              <div className="min-w-0 flex-1"><h4 className="font-bold text-[#303249]">{task.title}</h4><p className={`mt-1 text-xs font-semibold ${overdue ? "text-red-700" : "text-[#85879a]"}`}>{dueLabel} · {task.ownerName ? `Responsável: ${task.ownerName}` : `Sugestão: ${task.ownerRole}`}</p></div>
+              <div className="flex flex-wrap items-center gap-2">{!task.ownerEmployeeId && <button className="rounded-lg border border-[#dadaf0] bg-[#f8f8ff] px-2.5 py-2 text-xs font-bold text-[#5556d8] hover:bg-[#efefff]" disabled={savingId === task.id} onClick={() => void claimTask(task)} type="button">Assumir tarefa</button>}<label className="flex items-center gap-2 text-xs font-bold text-[#55576d]">Estado<select aria-label={`Estado: ${task.title}`} className="rounded-lg border border-[#e3e3ed] bg-white px-2.5 py-2 text-xs" disabled={savingId === task.id} value={statusEdits[task.id]?.status ?? task.status} onChange={(event) => setStatusEdits((current) => ({ ...current, [task.id]: { status: event.target.value as PreparationTask["status"], comment: current[task.id]?.comment ?? "" } }))}>{Object.entries(statusLabels).map(([value, label]) => <option key={value} value={value}>{label}</option>)}</select></label></div>
+              {statusEdits[task.id] && <div className="basis-full rounded-xl border border-[#e8e8f0] bg-[#fafafe] p-3"><label className="block text-xs font-bold text-[#55576d]">Comentário sobre a situação <span className="font-normal text-[#85879a]">(opcional)</span><textarea className="mt-1.5 min-h-16 w-full rounded-lg border border-[#e3e3ed] bg-white p-2.5 text-xs font-normal" maxLength={2000} placeholder="Explique o contexto ou o que falta para avançar." value={statusEdits[task.id].comment} onChange={(event) => setStatusEdits((current) => ({ ...current, [task.id]: { ...current[task.id], comment: event.target.value } }))} /></label><div className="mt-2 flex justify-end gap-2"><button className="rounded-lg px-3 py-2 text-xs font-bold text-[#777a91]" onClick={() => setStatusEdits((current) => { const next = { ...current }; delete next[task.id]; return next; })} type="button">Cancelar</button><button className="rounded-lg bg-[#5556d8] px-3 py-2 text-xs font-bold text-white disabled:opacity-50" disabled={savingId === task.id} onClick={() => void updateStatus(task, statusEdits[task.id].status, statusEdits[task.id].comment)} type="button">Salvar atualização</button></div></div>}
+              <details className="basis-full border-t border-[#f0f0f5] pt-2 text-xs text-[#777a91]"><summary className="w-fit cursor-pointer font-bold text-[#5556d8]">Detalhes{task.openIssueCount ? ` · ${task.openIssueCount} problema(s)` : ""}</summary>
+                <div className="mt-3 space-y-3">{task.description && <p className="leading-5">{task.description}</p>}
+                  {task.category === "Equipamento" && <form className="flex flex-col gap-2 rounded-xl bg-[#fafafe] p-3 sm:flex-row sm:items-end" onSubmit={(event) => void saveTrackingLink(event, task)}><label className="min-w-0 flex-1 font-bold">Link de rastreio<input className="mt-1 w-full rounded-lg border border-[#e3e3ed] bg-white px-2.5 py-2 text-xs font-normal" defaultValue={task.trackingUrl ?? ""} name="trackingUrl" type="url" maxLength={1000} /></label><button className="self-end rounded-lg border border-[#e3e3ed] px-3 py-2 font-bold text-[#5556d8] hover:bg-white" disabled={savingId === task.id} type="submit">Salvar link</button></form>}
+                  {task.category === "Equipamento" && task.trackingUrl && <a className="font-bold text-[#5556d8] underline" href={task.trackingUrl} rel="noreferrer" target="_blank">Abrir link de rastreio</a>}
+                  {task.issues.length > 0 && <div className="space-y-2"><strong className="text-[#55576d]">Problemas sinalizados ({task.openIssueCount})</strong>{task.issues.map((issue) => <div className="rounded-lg bg-[#fafafe] p-3" key={issue.id}><p className="text-[#45475d]">{issue.description}</p><div className="mt-2 flex flex-wrap items-center gap-2"><span>{issue.status === "resolved" ? `Resolvido: ${issue.resolutionNote ?? ""}` : issue.status === "in_review" ? "Em acompanhamento" : "Aberto"}</span>{issue.status !== "resolved" && <><button className="font-bold text-[#5556d8]" onClick={() => void updateIssue(issue, "in_review")} type="button">Acompanhar</button><button className="font-bold text-emerald-700" onClick={() => void updateIssue(issue, "resolved")} type="button">Marcar resolvido</button></>}</div></div>)}</div>}
+                </div>
+              </details>
+              <details className="basis-full rounded-lg border-t border-[#f0f0f5] pt-2 text-xs text-[#777a91]"><summary className="w-fit cursor-pointer font-bold text-[#5556d8]">Ver histórico de atualizações ({task.history.length})</summary>{task.history.length ? <div className="mt-2 space-y-2">{task.history.map((entry) => <div className="rounded-lg bg-[#fafafe] px-3 py-2" key={entry.id}><p>{formatDate(entry.createdAt)} · {entry.actorName} · {historyActionLabel(entry.action)}{historyValue(entry) ? `: ${historyValue(entry)}` : ""}</p>{entry.comment && <p className="mt-1 whitespace-pre-wrap text-[#55576d]">{entry.comment}</p>}</div>)}</div> : <p className="mt-2">Nenhuma atualização registrada ainda.</p>}</details>
+            </div>
+          </article>;
+        })}
+      </section>)}</div>
+      </article>
+    </> : peopleGroups.length ? <div className="space-y-2">{peopleGroups.map((person) => {
+      const urgentTask = person.nextTask;
+      const urgentDate = urgentTask?.dueDate.slice(0, 10) ?? "";
+      const urgentLabel = urgentTask ? urgentDate < today ? `Mais urgente: atrasada · ${formatDate(urgentDate)}` : urgentDate === today ? "Mais urgente: vence hoje" : `Próximo prazo: ${formatDate(urgentDate)}` : "Todas as tarefas concluídas";
+      return <button className="content-panel flex w-full flex-wrap items-center gap-2.5 !p-3 text-left transition hover:border-[#c9c8ed] hover:bg-[#fcfbff] sm:!p-3.5" key={person.employeeId} onClick={() => setSelectedEmployeeId(person.employeeId)} type="button">
+        <EmployeeAvatar employeeId={person.employeeId} name={person.employeeName} className="grid size-9 shrink-0 place-items-center rounded-xl bg-[#e9e8ff] text-xs font-extrabold text-[#5859d6]" />
+        <span className="min-w-0 flex-1"><strong className="block truncate text-sm text-[#303249]">{person.employeeName}</strong><small className="block truncate text-[11px] text-[#85879a]">{person.department ?? "Área não definida"} · Entrada {formatDate(person.startDate)}</small><small className={`block text-[11px] font-semibold ${urgentTask && urgentDate < today ? "text-red-700" : "text-[#777a91]"}`}>{urgentLabel}</small></span>
+        <span className="rounded-full bg-[#f5f5f9] px-2.5 py-1 text-[11px] font-bold text-[#55576d]">{person.tasks.length} tarefas</span><span className="shrink-0 text-base text-[#8b8da0]">›</span>
+      </button>;
+    })}</div> : <p className="content-panel text-sm text-[#85879a]">Ainda não há tarefas de preparação que você possa acompanhar.</p>}</div>
   </section>;
+}
+
+function formatDate(value: string) {
+  const date = new Date(`${value.slice(0, 10)}T00:00:00`);
+  return Number.isNaN(date.getTime()) ? "—" : new Intl.DateTimeFormat("pt-BR", { day: "2-digit", month: "short" }).format(date);
 }
 
 function historyActionLabel(action: string) {
   if (action === "status") return "alterou o estado";
-  if (action === "shipment") return "atualizou a entrega";
+  if (action === "owner") return "assumiu a tarefa";
+  if (action === "shipment") return "atualizou o link de rastreio";
   if (action === "employee_confirmation") return "confirmou como pronto";
   if (action === "issue_reported") return "registrou um problema";
   if (action === "issue_status") return "atualizou um problema";
@@ -102,8 +191,12 @@ function historyActionLabel(action: string) {
 }
 
 function historyValue(entry: PreparationHistoryEntry) {
-  if (!entry.newValue || entry.action === "shipment") return "";
-  if (entry.action === "status") return statusLabels[entry.newValue as PreparationTask["status"]] ?? entry.newValue;
+  if (!entry.newValue || entry.action === "shipment" || entry.action === "owner") return "";
+  if (entry.action === "status") {
+    const previous = statusLabels[entry.previousValue as PreparationTask["status"]] ?? entry.previousValue ?? "A iniciar";
+    const next = statusLabels[entry.newValue as PreparationTask["status"]] ?? entry.newValue;
+    return `de ${previous} para ${next}`;
+  }
   if (entry.action === "issue_status") return entry.newValue === "in_review" ? "Em acompanhamento" : entry.newValue === "resolved" ? "Resolvido" : entry.newValue;
   return entry.newValue;
 }

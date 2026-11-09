@@ -54,9 +54,17 @@ try {
   const supportRequestChatMigration = await readFile(new URL("../database/postgresql/021-support-request-chat.sql", import.meta.url), "utf8");
   const preEntryDueDatesMigration = await readFile(new URL("../database/postgresql/022-pre-entry-due-dates.sql", import.meta.url), "utf8");
   const preparationOperationsMigration = await readFile(new URL("../database/postgresql/023-preparation-operations.sql", import.meta.url), "utf8");
+  const preEntryCategoriesMigration = await readFile(new URL("../database/postgresql/024-pre-entry-categories.sql", import.meta.url), "utf8");
+  const preparationFlexibleStatusesMigration = await readFile(new URL("../database/postgresql/025-preparation-flexible-statuses.sql", import.meta.url), "utf8");
+  const preparationHistoryCommentsMigration = await readFile(new URL("../database/postgresql/026-preparation-history-comments.sql", import.meta.url), "utf8");
+  const preEntryGroupOwnershipMigration = await readFile(new URL("../database/postgresql/027-pre-entry-group-ownership.sql", import.meta.url), "utf8");
+  const optionalOnboardingStartDateMigration = await readFile(new URL("../database/postgresql/028-optional-onboarding-start-date.sql", import.meta.url), "utf8");
+  const taskAssumingDepartmentsMigration = await readFile(new URL("../database/postgresql/029-task-assuming-departments.sql", import.meta.url), "utf8");
+  const resourceLibraryScopeMigration = await readFile(new URL("../database/postgresql/030-resource-library-scope.sql", import.meta.url), "utf8");
+  const resourceAudiencesMigration = await readFile(new URL("../database/postgresql/031-resource-audiences.sql", import.meta.url), "utf8");
   const seed = await readFile(new URL("../database/postgresql/002-seed.sql", import.meta.url), "utf8");
   const resources = await readFile(new URL("../database/postgresql/003-local-resources.sql", import.meta.url), "utf8");
-  await database.query(`BEGIN;\n${schema}\n${authMigration}\n${hrPlansMigration}\n${hrAccessMigration}\n${planResourcesMigration}\n${planConfigurationsMigration}\n${resourceFilesMigration}\n${removeResourceEstimatedMinutesMigration}\n${hrTaskPresetsMigration}\n${taskResponsiblePeopleMigration}\n${seed}\n${resources}\n${preEntryTaskPresets}\n${employeeOrganizationMigration}\n${teamHierarchyMigration}\n${employeePlanProgressMigration}\n${supportConversationsMigration}\n${supportMessageReadsMigration}\n${supportResolutionConfirmationMigration}\n${employeeCheckInsSupportMigration}\n${supportRequestChatMigration}\n${preEntryDueDatesMigration}\n${preparationOperationsMigration}\nCOMMIT;`);
+  await database.query(`BEGIN;\n${schema}\n${authMigration}\n${hrPlansMigration}\n${hrAccessMigration}\n${planResourcesMigration}\n${planConfigurationsMigration}\n${resourceFilesMigration}\n${removeResourceEstimatedMinutesMigration}\n${hrTaskPresetsMigration}\n${taskResponsiblePeopleMigration}\n${seed}\n${resources}\n${preEntryTaskPresets}\n${employeeOrganizationMigration}\n${teamHierarchyMigration}\n${employeePlanProgressMigration}\n${supportConversationsMigration}\n${supportMessageReadsMigration}\n${supportResolutionConfirmationMigration}\n${employeeCheckInsSupportMigration}\n${supportRequestChatMigration}\n${preEntryDueDatesMigration}\n${preparationOperationsMigration}\n${preEntryCategoriesMigration}\n${preparationFlexibleStatusesMigration}\n${preparationHistoryCommentsMigration}\n${preEntryGroupOwnershipMigration}\n${optionalOnboardingStartDateMigration}\n${taskAssumingDepartmentsMigration}\n${resourceLibraryScopeMigration}\n${resourceAudiencesMigration}\nCOMMIT;`);
   console.log(existingSchema.rows[0].table_name
     ? "OnRamp schema exists; demo data is up to date."
     : "OnRamp schema and demo data are ready.");

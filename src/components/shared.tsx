@@ -35,6 +35,7 @@ export type LibraryResource = {
   downloadUrl?: string | null;
   isExternalLink?: boolean;
   fileName?: string | null;
+  audience?: "shared" | "personal";
 };
 
 export function Icon({ name, size = 20 }: { name: IconName; size?: number }) {

@@ -19,7 +19,7 @@ type Account = {
   managerName?: string | null;
   mentorEmployeeId?: number | null;
   mentorName?: string | null;
-  startDate: string;
+  startDate: string | null;
   isActive: boolean;
   planTaskCount: number;
 };
@@ -35,7 +35,8 @@ type Resource = {
   format: string;
   category: string;
   category_slug?: string;
-  owner_employee_id?: number | null;
+  audience_employee_ids?: number[];
+  audience_names?: string[];
   external_url?: string | null;
   download_url?: string | null;
 };
@@ -63,6 +64,7 @@ type PlanTask = {
   ownerEmployeeId: number | null;
   ownerName?: string | null;
   responsibleDepartmentId?: number | null;
+  responsibleDepartmentIds?: number[];
   dueOffsetDays: number;
   required: boolean;
 };
@@ -83,8 +85,11 @@ type TaskDraft = {
   description: string;
   category: string;
   taskType: PlanTask["taskType"];
+  ownerKind: "person" | "team" | "department";
   ownerEmployeeId: string;
+  ownerGroupId: string;
   responsibleDepartmentId: string;
+  responsibleDepartmentIds: string[];
   dueOffsetDays: string;
   required: boolean;
 };
@@ -145,19 +150,62 @@ const taskTypeLabels: Record<PlanTask["taskType"], string> = {
   training: "Treinamento",
   checkin: "Check-in",
 };
-const preparationCategories = ["Contas e aplicativos", "Equipamento", "Documentos e aprovações legais", "Transporte", "Chegada no primeiro dia", "Geral"];
+const preparationCategories = ["Jurídico", "TI", "Equipamento", "Contas e acessos", "Financeiro", "Pessoas & Cultura", "Geral"];
+const journeyTaskCategories = ["Capacitação", "Check-in", "Conteúdo", "Equipe", "Mentoria", "Acompanhamento", "Suporte", "Entrega", "Desenvolvimento", "Geral"];
 
 const emptyDraft: TaskDraft = {
   stageTemplateId: "",
   title: "",
   description: "",
-  category: "Contas e aplicativos",
+  category: "Capacitação",
   taskType: "task",
+  ownerKind: "person",
   ownerEmployeeId: "",
+  ownerGroupId: "",
   responsibleDepartmentId: "",
+  responsibleDepartmentIds: [],
   dueOffsetDays: "0",
   required: true,
 };
+
+function isPreEntryStage(stages: Stage[], stageId: string | number) {
+  return stages.some((stage) => stage.id === Number(stageId) && stage.code === "pre-entry");
+}
+
+function makeTaskDraft(stageId: string | number | null, stages: Stage[], ownerEmployeeId = ""): TaskDraft {
+  const preEntry = isPreEntryStage(stages, stageId ?? "");
+  return {
+    ...emptyDraft,
+    stageTemplateId: String(stageId ?? ""),
+    category: preEntry ? "TI" : "Capacitação",
+    taskType: preEntry ? "preparation" : "task",
+    ownerKind: preEntry ? "department" : "person",
+    ownerEmployeeId,
+  };
+}
+
+function changeTaskDraftStage(taskDraft: TaskDraft, stageId: string, stages: Stage[]): TaskDraft {
+  const preEntry = isPreEntryStage(stages, stageId);
+  const allowedCategories = preEntry ? preparationCategories : journeyTaskCategories;
+  return {
+    ...taskDraft,
+    stageTemplateId: stageId,
+    category: allowedCategories.includes(taskDraft.category) ? taskDraft.category : preEntry ? "TI" : "Capacitação",
+    taskType: preEntry ? "preparation" : taskDraft.taskType === "preparation" ? "task" : taskDraft.taskType,
+    ownerKind: preEntry ? taskDraft.ownerKind === "person" ? "department" : taskDraft.ownerKind : "person",
+    ownerGroupId: preEntry ? taskDraft.ownerGroupId : "",
+  };
+}
+
+function taskCategoriesForStage(stages: Stage[], stageId: string | number, currentCategory: string) {
+  const categories = isPreEntryStage(stages, stageId) ? preparationCategories : journeyTaskCategories;
+  return categories.includes(currentCategory) ? categories : [currentCategory, ...categories];
+}
+
+function taskTypesForStage(stages: Stage[], stageId: string | number) {
+  const preEntry = isPreEntryStage(stages, stageId);
+  return Object.entries(taskTypeLabels).filter(([value]) => preEntry ? value === "preparation" : value !== "preparation");
+}
 
 async function fetchHrJson<T>(url: string, fallbackMessage: string, init?: RequestInit): Promise<T> {
   const response = await fetch(url, init);
@@ -178,7 +226,7 @@ async function fetchHrJson<T>(url: string, fallbackMessage: string, init?: Reque
   return result as T;
 }
 
-function HrPlansView({ section }: { section: "people" | "plans" }) {
+function HrPlansView({ section }: { section: "people" | "plans" | "files" }) {
   const [accounts, setAccounts] = useState<Account[]>([]);
   const [responsiblePeople, setResponsiblePeople] = useState<ResponsiblePerson[]>([]);
   const [departments, setDepartments] = useState<Department[]>([]);
@@ -186,7 +234,8 @@ function HrPlansView({ section }: { section: "people" | "plans" }) {
   const [libraryResources, setLibraryResources] = useState<Resource[]>([]);
   const [resourceCategories, setResourceCategories] = useState<ResourceCategory[]>([]);
   const [resourceFile, setResourceFile] = useState<File | null>(null);
-  const [resourceDraft, setResourceDraft] = useState({ title: "", description: "", categorySlug: "", sourceType: "file" as "file" | "link", externalUrl: "" });
+  const [resourceDraft, setResourceDraft] = useState({ title: "", description: "", categorySlug: "", sourceType: "file" as "file" | "link", externalUrl: "", audienceEmployeeIds: [] as string[], audienceScope: "public" as "public" | "private" });
+  const [planAction, setPlanAction] = useState<"none" | "task" | "file">("none");
   const [editingResourceId, setEditingResourceId] = useState<number | null>(null);
   const [uploadingResource, setUploadingResource] = useState(false);
   const [stages, setStages] = useState<Stage[]>([]);
@@ -205,7 +254,7 @@ function HrPlansView({ section }: { section: "people" | "plans" }) {
   const [planResources, setPlanResources] = useState<PlanResource[]>([]);
   const [creatingAccount, setCreatingAccount] = useState(false);
   const [showAccountForm, setShowAccountForm] = useState(false);
-  const [accountDraft, setAccountDraft] = useState({ name: "", email: "", jobTitle: "", departmentIds: [] as number[], preparationDepartmentIds: [] as number[], teamIds: [] as number[], managerEmployeeId: "", mentorEmployeeId: "", startDate: new Date(Date.now() - new Date().getTimezoneOffset() * 60_000).toISOString().slice(0, 10), password: "" });
+  const [accountDraft, setAccountDraft] = useState({ name: "", email: "", jobTitle: "", departmentIds: [] as number[], preparationDepartmentIds: [] as number[], teamIds: [] as number[], managerEmployeeId: "", mentorEmployeeId: "", startDate: "", password: "" });
   const [teamSearch, setTeamSearch] = useState("");
   const [editingAccountId, setEditingAccountId] = useState<number | null>(null);
   const [peopleSearch, setPeopleSearch] = useState("");
@@ -219,15 +268,48 @@ function HrPlansView({ section }: { section: "people" | "plans" }) {
   const [editTeamDraft, setEditTeamDraft] = useState({ name: "", description: "", parentTeamId: "", memberIds: [] as number[], leaderIds: [] as number[] });
   const [savingOrganization, setSavingOrganization] = useState(false);
   const [planSearch, setPlanSearch] = useState("");
+  const [resourceSearch, setResourceSearch] = useState("");
+  const [resourceAudienceFilter, setResourceAudienceFilter] = useState<"all" | "shared" | "person">("all");
   const [draft, setDraft] = useState<TaskDraft>(emptyDraft);
   const [editingTaskId, setEditingTaskId] = useState<number | string | null>(null);
   const [taskResponsibleSearch, setTaskResponsibleSearch] = useState("");
   const [presetResponsibleSearch, setPresetResponsibleSearch] = useState("");
+  const hrPlansRootRef = useRef<HTMLElement>(null);
+  const planActionEditorRef = useRef<HTMLFormElement>(null);
+  const taskResponsiblePickerRef = useRef<HTMLDivElement>(null);
+  const presetResponsiblePickerRef = useRef<HTMLDivElement>(null);
   const [loadingAccounts, setLoadingAccounts] = useState(true);
   const [loadingPlan, setLoadingPlan] = useState(false);
   const [saving, setSaving] = useState(false);
   const [error, setError] = useState("");
   const [notice, setNotice] = useState("");
+
+  useEffect(() => {
+    function handlePointerDown(event: PointerEvent) {
+      const target = event.target;
+      if (!(target instanceof Node)) return;
+
+      hrPlansRootRef.current?.querySelectorAll<HTMLDetailsElement>("details[open]").forEach((details) => {
+        if (!details.contains(target)) details.open = false;
+      });
+      if (!taskResponsiblePickerRef.current?.contains(target)) setTaskResponsibleSearch("");
+      if (!presetResponsiblePickerRef.current?.contains(target)) setPresetResponsibleSearch("");
+    }
+
+    function handleKeyDown(event: KeyboardEvent) {
+      if (event.key !== "Escape") return;
+      hrPlansRootRef.current?.querySelectorAll<HTMLDetailsElement>("details[open]").forEach((details) => { details.open = false; });
+      setTaskResponsibleSearch("");
+      setPresetResponsibleSearch("");
+    }
+
+    document.addEventListener("pointerdown", handlePointerDown);
+    document.addEventListener("keydown", handleKeyDown);
+    return () => {
+      document.removeEventListener("pointerdown", handlePointerDown);
+      document.removeEventListener("keydown", handleKeyDown);
+    };
+  }, []);
 
   useEffect(() => {
     Promise.all([
@@ -246,14 +328,14 @@ function HrPlansView({ section }: { section: "people" | "plans" }) {
         setStages(stageRows);
         setDepartments(departmentRows);
         setTeams(teamRows);
-        setLibraryResources(resourceRows);
+        setLibraryResources(resourceRows.map((resource) => ({ ...resource, id: Number(resource.id), audience_employee_ids: (resource.audience_employee_ids ?? []).map(Number) })));
         setResourceCategories(categoryRows);
         setTaskPresets(presetRows);
         setResourceDraft((current) => ({ ...current, categorySlug: current.categorySlug || categoryRows.find(({ slug }) => slug === "onboarding")?.slug || categoryRows[0]?.slug || "" }));
         setSelectedAccountId(null);
         setSelectedStageId(stageRows[0]?.id ?? null);
-        setDraft((current) => ({ ...current, stageTemplateId: String(stageRows[0]?.id ?? "") }));
-        setPresetTaskDraft((current) => ({ ...current, stageTemplateId: String(stageRows[0]?.id ?? "") }));
+        setDraft((current) => ({ ...makeTaskDraft(stageRows[0]?.id ?? null, stageRows, current.ownerEmployeeId) }));
+        setPresetTaskDraft((current) => ({ ...makeTaskDraft(stageRows[0]?.id ?? null, stageRows, current.ownerEmployeeId) }));
       })
       .catch((loadError) => setError(loadError instanceof Error ? loadError.message : "Não foi possível carregar a página do RH."))
       .finally(() => setLoadingAccounts(false));
@@ -271,14 +353,14 @@ function HrPlansView({ section }: { section: "people" | "plans" }) {
     setError("");
     setNotice("");
     setEditingTaskId(null);
-    setDraft((current) => ({ ...emptyDraft, stageTemplateId: current.stageTemplateId || String(selectedStageId ?? "") }));
+    setDraft((current) => makeTaskDraft(current.stageTemplateId || selectedStageId, stages, current.ownerEmployeeId));
     fetch(`/api/hr/accounts/${selectedAccountId}/plan`, { signal: controller.signal })
       .then(async (response) => {
         const result = await response.json();
         if (!response.ok) throw new Error(result.error ?? "Não foi possível carregar o padrão.");
         return result as { tasks: PlanTask[]; resources: PlanResource[] };
       })
-      .then((result) => { setTasks(result.tasks); setExcludedTaskIds([]); setPlanResources(result.resources); })
+      .then((result) => { setTasks(result.tasks); setExcludedTaskIds([]); setPlanResources(result.resources.map((resource) => ({ ...resource, resourceId: Number(resource.resourceId) }))); })
       .catch((loadError) => {
         if (loadError instanceof DOMException && loadError.name === "AbortError") return;
         setError(loadError instanceof Error ? loadError.message : "Não foi possível carregar o padrão.");
@@ -294,7 +376,23 @@ function HrPlansView({ section }: { section: "people" | "plans" }) {
     const frame = window.requestAnimationFrame(() => selectedAccountPlanRef.current?.scrollIntoView({ behavior: "smooth", block: "start" }));
     return () => window.cancelAnimationFrame(frame);
   }, [section, selectedAccountId]);
+  useEffect(() => {
+    if (section !== "plans" || planAction === "none") return;
+    const frame = window.requestAnimationFrame(() => planActionEditorRef.current?.scrollIntoView({ behavior: "smooth", block: "center" }));
+    return () => window.cancelAnimationFrame(frame);
+  }, [section, planAction]);
   const selectedStage = stages.find(({ id }) => id === selectedStageId) ?? null;
+  const normalizedResourceSearch = resourceSearch.trim().normalize("NFD").replace(/[\u0300-\u036f]/g, "").toLocaleLowerCase("pt-BR");
+  const visibleLibraryResources = libraryResources.filter((resource) => {
+    const audienceMatches = resourceAudienceFilter === "all"
+      || (resourceAudienceFilter === "shared" ? !resource.audience_employee_ids?.length : Boolean(resource.audience_employee_ids?.length));
+    const text = `${resource.title} ${resource.description ?? ""} ${resource.category} ${resource.format} ${(resource.audience_names ?? []).join(" ")}`.normalize("NFD").replace(/[\u0300-\u036f]/g, "").toLocaleLowerCase("pt-BR");
+    return audienceMatches && (!normalizedResourceSearch || text.includes(normalizedResourceSearch));
+  });
+  const stageLibraryResources = libraryResources.filter((resource) =>
+    (!resource.audience_employee_ids?.length || resource.audience_employee_ids.includes(Number(selectedAccountId)))
+      && (!normalizedResourceSearch || `${resource.title} ${resource.description ?? ""} ${resource.category}`.normalize("NFD").replace(/[\u0300-\u036f]/g, "").toLocaleLowerCase("pt-BR").includes(normalizedResourceSearch)),
+  );
   const teamRows = useMemo(() => buildTeamTree(teams), [teams]);
   const normalizedTeamSearch = teamSearch.trim().normalize("NFD").replace(/[\u0300-\u036f]/g, "").toLocaleLowerCase("pt-BR");
   const visibleTeamRows = normalizedTeamSearch
@@ -310,25 +408,46 @@ function HrPlansView({ section }: { section: "people" | "plans" }) {
     () => tasks.filter((task) => task.stageTemplateId === selectedStageId),
     [tasks, selectedStageId],
   );
+  const stageTaskGroups = useMemo(() => {
+    if (selectedStage?.code !== "pre-entry") return [{ category: "", tasks: stageTasks }];
+    const categories = [...new Set(stageTasks.map((task) => task.category.trim() || "Geral"))].sort((left, right) => {
+      const leftOrder = preparationCategories.indexOf(left);
+      const rightOrder = preparationCategories.indexOf(right);
+      if (leftOrder >= 0 || rightOrder >= 0) {
+        if (leftOrder < 0) return 1;
+        if (rightOrder < 0) return -1;
+        return leftOrder - rightOrder;
+      }
+      return left.localeCompare(right, "pt-BR");
+    });
+    return categories.map((category) => ({ category, tasks: stageTasks.filter((task) => (task.category.trim() || "Geral") === category) }));
+  }, [stageTasks, selectedStage?.code]);
 
   function resetDraft(stageId = selectedStageId) {
     setEditingTaskId(null);
-    setDraft((current) => ({ ...emptyDraft, stageTemplateId: String(stageId ?? ""), ownerEmployeeId: current.ownerEmployeeId }));
+    setDraft((current) => makeTaskDraft(stageId, stages, current.ownerEmployeeId));
+    setPlanAction("none");
   }
 
   function taskFromDraft(taskDraft: TaskDraft, id: number | string): PlanTask | null {
     const stage = stages.find(({ id: stageId }) => stageId === Number(taskDraft.stageTemplateId));
     const owner = responsiblePeople.find((person) => person.id === Number(taskDraft.ownerEmployeeId));
-    if (!stage || !owner) return null;
+    const preEntry = stage?.code === "pre-entry";
+    const responsibleDepartment = departments.find(({ id: departmentId }) => departmentId === Number(taskDraft.ownerGroupId));
+    const responsibleTeam = teams.find(({ id: teamId }) => teamId === Number(taskDraft.ownerGroupId));
+    const groupOwner = taskDraft.ownerKind === "department" ? responsibleDepartment?.name : taskDraft.ownerKind === "team" ? responsibleTeam?.name : null;
+    if (!stage || (preEntry ? !taskDraft.responsibleDepartmentIds.length : !owner)) return null;
     return {
       id, stageTemplateId: stage.id, stageName: stage.name,
       stageOrder: stage.display_order ?? stages.findIndex(({ id: stageId }) => stageId === stage.id),
       title: taskDraft.title.trim(), description: taskDraft.description.trim(),
-      category: taskDraft.category, taskType: taskDraft.taskType,
-      ownerEmployeeId: Number(taskDraft.ownerEmployeeId),
-      responsibleDepartmentId: Number(taskDraft.responsibleDepartmentId) || owner.departmentId || null,
-      ownerRole: owner.name,
-      ownerName: owner.name,
+      category: taskDraft.category,
+      taskType: stage.code === "pre-entry" ? "preparation" : taskDraft.taskType === "preparation" ? "task" : taskDraft.taskType,
+      ownerEmployeeId: preEntry ? null : owner?.id ?? null,
+      responsibleDepartmentId: Number(taskDraft.responsibleDepartmentIds[0]) || (taskDraft.ownerKind === "department" ? responsibleDepartment?.id : null) || owner?.departmentId || null,
+      responsibleDepartmentIds: taskDraft.responsibleDepartmentIds.map(Number),
+      ownerRole: preEntry ? groupOwner ?? "Sem sugestão" : owner?.name ?? "",
+      ownerName: preEntry ? null : owner?.name ?? null,
       dueOffsetDays: Number(taskDraft.dueOffsetDays),
       required: taskDraft.required,
     };
@@ -338,7 +457,12 @@ function HrPlansView({ section }: { section: "people" | "plans" }) {
     event.preventDefault();
     const existingTask = tasks.find(({ id }) => id === editingTaskId);
     const task = taskFromDraft(draft, existingTask?.id ?? `draft-${Date.now()}`);
-    if (!task) return;
+    if (!task) {
+      setError(isPreEntryStage(stages, draft.stageTemplateId)
+        ? "Selecione ao menos uma área com permissão para assumir a tarefa. A sugestão de equipe ou departamento é opcional."
+        : "Selecione uma pessoa responsável pela tarefa.");
+      return;
+    }
     setTasks((current) => existingTask
       ? current.map((item) => item.id === existingTask.id ? task : item)
       : [...current, task]);
@@ -354,12 +478,13 @@ function HrPlansView({ section }: { section: "people" | "plans" }) {
       setError("Escreva o título da tarefa antes de adicioná-la ao pacote.");
       return;
     }
-    if (!presetTaskDraft.ownerEmployeeId) {
-      setError("Selecione a pessoa responsável pela tarefa.");
+    const task = taskFromDraft(presetTaskDraft, `preset-draft-${Date.now()}`);
+    if (!task) {
+      setError(isPreEntryStage(stages, presetTaskDraft.stageTemplateId)
+        ? "Selecione ao menos uma área com permissão para assumir. A sugestão de equipe ou departamento é opcional."
+        : "Selecione a pessoa responsável pela tarefa.");
       return;
     }
-    const task = taskFromDraft(presetTaskDraft, `preset-draft-${Date.now()}`);
-    if (!task) return;
     setPresetTasks((current) => [...current, task]);
     setPresetTaskDraft((current) => ({ ...current, title: "", description: "" }));
     setError("");
@@ -432,6 +557,7 @@ function HrPlansView({ section }: { section: "people" | "plans" }) {
   }
 
   function editTask(task: PlanTask) {
+    setPlanAction("task");
     setEditingTaskId(task.id);
     setSelectedStageId(task.stageTemplateId);
     setDraft({
@@ -440,8 +566,11 @@ function HrPlansView({ section }: { section: "people" | "plans" }) {
       description: task.description,
       category: task.category,
       taskType: task.taskType,
+      ownerKind: teams.some(({ name }) => name === task.ownerRole) ? "team" : "department",
       ownerEmployeeId: String(task.ownerEmployeeId ?? responsiblePeople.find((person) => person.name === task.ownerRole)?.id ?? ""),
+      ownerGroupId: String(task.ownerEmployeeId ? "" : (teams.find(({ name }) => name === task.ownerRole)?.id ?? departments.find(({ name }) => name === task.ownerRole)?.id ?? "")),
       responsibleDepartmentId: String(task.responsibleDepartmentId ?? ""),
+      responsibleDepartmentIds: (task.responsibleDepartmentIds?.length ? task.responsibleDepartmentIds : task.responsibleDepartmentId ? [task.responsibleDepartmentId] : []).map(String),
       dueOffsetDays: String(task.dueOffsetDays),
       required: task.required,
     });
@@ -475,7 +604,10 @@ function HrPlansView({ section }: { section: "people" | "plans" }) {
       categorySlug: resource.category_slug ?? resourceCategories.find(({ name }) => name === resource.category)?.slug ?? "",
       sourceType: resource.external_url ? "link" : "file",
       externalUrl: resource.external_url ?? "",
+      audienceEmployeeIds: (resource.audience_employee_ids ?? []).map(String),
+      audienceScope: resource.audience_employee_ids?.length ? "private" : "public",
     });
+    setPlanAction("file");
     setError("");
     setNotice("");
     const input = document.getElementById("hr-resource-file") as HTMLInputElement | null;
@@ -485,15 +617,38 @@ function HrPlansView({ section }: { section: "people" | "plans" }) {
   function resetResourceDraft() {
     setEditingResourceId(null);
     setResourceFile(null);
-    setResourceDraft({ title: "", description: "", categorySlug: resourceCategories.find(({ slug }) => slug === "onboarding")?.slug ?? resourceCategories[0]?.slug ?? "", sourceType: "file", externalUrl: "" });
+    setResourceDraft({ title: "", description: "", categorySlug: resourceCategories.find(({ slug }) => slug === "onboarding")?.slug ?? resourceCategories[0]?.slug ?? "", sourceType: "file", externalUrl: "", audienceEmployeeIds: [], audienceScope: "public" });
     const input = document.getElementById("hr-resource-file") as HTMLInputElement | null;
     if (input) input.value = "";
+  }
+
+  function setResourceAudienceScope(scope: "public" | "private") {
+    setResourceDraft((current) => ({
+      ...current,
+      audienceScope: scope,
+      audienceEmployeeIds: scope === "public" ? [] : current.audienceEmployeeIds.length ? current.audienceEmployeeIds : section === "plans" && selectedAccountId ? [String(selectedAccountId)] : [],
+    }));
+  }
+
+  function toggleResourceAudience(employeeId: number) {
+    const id = String(employeeId);
+    setResourceDraft((current) => {
+      const selected = current.audienceEmployeeIds.includes(id);
+      const audienceEmployeeIds = selected
+        ? current.audienceEmployeeIds.filter((value) => value !== id)
+        : [...current.audienceEmployeeIds, id];
+      return { ...current, audienceEmployeeIds, audienceScope: audienceEmployeeIds.length ? "private" : current.audienceScope };
+    });
   }
 
   async function saveResource(event: FormEvent<HTMLFormElement>) {
     event.preventDefault();
     const editedResource = libraryResources.find(({ id }) => id === editingResourceId);
-    if (!selectedStage || (resourceDraft.sourceType === "file" && !resourceFile && (!editingResourceId || editedResource?.external_url))) {
+    if (resourceDraft.audienceScope === "private" && !resourceDraft.audienceEmployeeIds.length) {
+      setError("Pesquise e escolha ao menos uma pessoa para acessar este arquivo privado.");
+      return;
+    }
+    if ((section !== "files" && !selectedStage) || (resourceDraft.sourceType === "file" && !resourceFile && (!editingResourceId || editedResource?.external_url))) {
       setError(resourceDraft.sourceType === "file" ? "Escolha um arquivo e uma etapa antes de salvar." : "Selecione uma etapa antes de salvar.");
       return;
     }
@@ -518,12 +673,14 @@ function HrPlansView({ section }: { section: "people" | "plans" }) {
         categorySlug: resourceDraft.categorySlug,
         sourceType: resourceDraft.sourceType,
         externalUrl: resourceDraft.sourceType === "link" ? resourceDraft.externalUrl.trim() : "",
+        audienceEmployeeIds: resourceDraft.audienceEmployeeIds.map(Number),
       };
       const headersForFile = (file: File) => ({
         "Content-Type": "application/octet-stream",
         "X-Resource-Title": encodeURIComponent(resourceDraft.title),
         "X-Resource-Description": encodeURIComponent(resourceDraft.description),
         "X-Resource-Category": encodeURIComponent(resourceDraft.categorySlug),
+        "X-Resource-Employee-Ids": encodeURIComponent(resourceDraft.audienceEmployeeIds.join(",")),
         "X-File-Name": encodeURIComponent(file.name),
         "X-File-Type": mimeType,
       });
@@ -549,11 +706,12 @@ function HrPlansView({ section }: { section: "people" | "plans" }) {
       const result = await response.json();
       if (!response.ok) throw new Error(result.error ?? "Não foi possível salvar o material.");
       const listResponse = await fetch("/api/resources");
-      const refreshedResources = await listResponse.json();
+      const refreshedResources = await listResponse.json() as Resource[] & { error?: string };
       if (!listResponse.ok) throw new Error(refreshedResources.error ?? "Material salvo, mas não foi possível atualizar a biblioteca.");
-      setLibraryResources(refreshedResources as Resource[]);
-      const added = refreshedResources.find((item: Resource) => Number(item.id) === Number(result.id)) as Resource | undefined;
-      if (added && !editingResourceId) {
+      const normalizedResources = refreshedResources.map((resource) => ({ ...resource, id: Number(resource.id), audience_employee_ids: (resource.audience_employee_ids ?? []).map(Number) }));
+      setLibraryResources(normalizedResources);
+      const added = normalizedResources.find((item) => item.id === Number(result.id));
+      if (added && !editingResourceId && selectedStage && selectedAccountId) {
         setPlanResources((current) => current.some((item) => item.stageTemplateId === selectedStage.id && item.resourceId === added.id)
           ? current
           : [...current, { stageTemplateId: selectedStage.id, stageName: selectedStage.name, resourceId: added.id, title: added.title, required: false }]);
@@ -562,7 +720,8 @@ function HrPlansView({ section }: { section: "people" | "plans" }) {
       const wasEditing = editingResourceId !== null;
       const sourceLabel = resourceDraft.sourceType === "link" ? "Link" : "Arquivo";
       resetResourceDraft();
-      setNotice(wasEditing ? "Material atualizado." : `${sourceLabel} cadastrado e associado à etapa ${selectedStage.name}. Salve a jornada para confirmar a associação.`);
+      if (section === "plans") setPlanAction("none");
+      setNotice(wasEditing ? "Material atualizado." : section === "files" ? `${sourceLabel} cadastrado na biblioteca.` : `${sourceLabel} cadastrado e associado à etapa ${selectedStage?.name}. Salve a jornada para confirmar a associação.`);
     } catch (uploadError) {
       setError(uploadError instanceof Error ? uploadError.message : "Não foi possível salvar o material.");
     } finally {
@@ -585,9 +744,9 @@ function HrPlansView({ section }: { section: "people" | "plans" }) {
       teamIds: account.teamIds ?? [],
       managerEmployeeId: String(account.managerEmployeeId ?? ""),
       mentorEmployeeId: String(account.mentorEmployeeId ?? ""),
-      startDate: account.startDate ?? new Date(Date.now() - new Date().getTimezoneOffset() * 60_000).toISOString().slice(0, 10),
+      startDate: account.startDate?.slice(0, 10) ?? "",
       password: "",
-    } : { name: "", email: "", jobTitle: "", departmentIds: [], preparationDepartmentIds: [], teamIds: [], managerEmployeeId: "", mentorEmployeeId: "", startDate: new Date(Date.now() - new Date().getTimezoneOffset() * 60_000).toISOString().slice(0, 10), password: "" });
+    } : { name: "", email: "", jobTitle: "", departmentIds: [], preparationDepartmentIds: [], teamIds: [], managerEmployeeId: "", mentorEmployeeId: "", startDate: "", password: "" });
   }
 
   async function saveAccount(event: FormEvent<HTMLFormElement>) {
@@ -600,8 +759,8 @@ function HrPlansView({ section }: { section: "people" | "plans" }) {
         method: editingAccountId ? "PATCH" : "POST",
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify(editingAccountId
-          ? { name: accountDraft.name, email: accountDraft.email, jobTitle: accountDraft.jobTitle, departmentIds: accountDraft.departmentIds, preparationDepartmentIds: accountDraft.preparationDepartmentIds, teamIds: accountDraft.teamIds, managerEmployeeId: accountDraft.managerEmployeeId, mentorEmployeeId: accountDraft.mentorEmployeeId, startDate: accountDraft.startDate, isActive: accounts.find(({ id }) => id === editingAccountId)?.isActive ?? true }
-          : accountDraft),
+          ? { name: accountDraft.name, email: accountDraft.email, jobTitle: accountDraft.jobTitle, departmentIds: accountDraft.departmentIds, preparationDepartmentIds: accountDraft.preparationDepartmentIds, teamIds: accountDraft.teamIds, managerEmployeeId: accountDraft.managerEmployeeId, mentorEmployeeId: accountDraft.mentorEmployeeId, startDate: accountDraft.startDate || null, isActive: accounts.find(({ id }) => id === editingAccountId)?.isActive ?? true }
+          : { ...accountDraft, startDate: accountDraft.startDate || null }),
       });
       const result = await response.json();
       if (!response.ok) throw new Error(result.error ?? "Não foi possível criar a conta.");
@@ -611,7 +770,7 @@ function HrPlansView({ section }: { section: "people" | "plans" }) {
       setAccounts(refreshedAccounts as Account[]);
       const account = (refreshedAccounts as Account[]).find(({ id }) => id === result.id);
       if (!editingAccountId && account?.isActive) setSelectedAccountId(account.id);
-      setAccountDraft({ name: "", email: "", jobTitle: "", departmentIds: [], preparationDepartmentIds: [], teamIds: [], managerEmployeeId: "", mentorEmployeeId: "", startDate: new Date(Date.now() - new Date().getTimezoneOffset() * 60_000).toISOString().slice(0, 10), password: "" });
+      setAccountDraft({ name: "", email: "", jobTitle: "", departmentIds: [], preparationDepartmentIds: [], teamIds: [], managerEmployeeId: "", mentorEmployeeId: "", startDate: "", password: "" });
       setEditingAccountId(null);
       setShowAccountForm(false);
       setNotice(editingAccountId ? `Dados de ${account?.name ?? "pessoa"} atualizados.` : `Conta criada para ${account?.name ?? "a pessoa"}. Agora você pode montar o onboarding dessa pessoa.`);
@@ -817,8 +976,8 @@ function HrPlansView({ section }: { section: "people" | "plans" }) {
   async function savePlan() {
     if (!selectedAccountId) return;
     const includedTasks = tasks.filter((task) => !excludedTaskIds.includes(task.id));
-    if (includedTasks.some((task) => !task.ownerEmployeeId)) {
-      setError("Escolha uma pessoa responsável para cada tarefa incluída. Use Editar na tarefa sem responsável.");
+    if (includedTasks.some((task) => !task.ownerEmployeeId && !isPreEntryStage(stages, task.stageTemplateId))) {
+      setError("Escolha uma pessoa responsável para cada tarefa fora da pré-entrada. Use Editar na tarefa sem responsável.");
       return;
     }
     setSaving(true);
@@ -829,8 +988,8 @@ function HrPlansView({ section }: { section: "people" | "plans" }) {
         method: "PUT",
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({
-          tasks: includedTasks.map(({ stageTemplateId, title, description, category, taskType, ownerRole, ownerEmployeeId, responsibleDepartmentId, dueOffsetDays, required }) => ({
-            stageTemplateId, title, description, category, taskType, ownerRole, ownerEmployeeId, responsibleDepartmentId, dueOffsetDays, required,
+          tasks: includedTasks.map(({ stageTemplateId, title, description, category, taskType, ownerRole, ownerEmployeeId, responsibleDepartmentId, responsibleDepartmentIds, dueOffsetDays, required }) => ({
+            stageTemplateId, title, description, category, taskType, ownerRole, ownerEmployeeId, responsibleDepartmentId, responsibleDepartmentIds, dueOffsetDays, required,
           })),
           resources: stages.map((stage) => ({
             stageTemplateId: stage.id,
@@ -846,7 +1005,7 @@ function HrPlansView({ section }: { section: "people" | "plans" }) {
       if (refreshed.ok) {
         setTasks(refreshedPlan.tasks as PlanTask[]);
         setExcludedTaskIds([]);
-        setPlanResources(refreshedPlan.resources as PlanResource[]);
+        setPlanResources((refreshedPlan.resources as PlanResource[]).map((resource) => ({ ...resource, resourceId: Number(resource.resourceId) })));
       }
       setNotice(`Jornada de ${selectedAccount?.name ?? "esta conta"} salva no banco de dados.`);
       setEditingTaskId(null);
@@ -858,7 +1017,7 @@ function HrPlansView({ section }: { section: "people" | "plans" }) {
   }
 
   return (
-    <section>
+    <section ref={hrPlansRootRef}>
       <header className="flex flex-wrap items-end justify-between gap-4">
         <div>
           <h1 className="mt-1 text-3xl font-extrabold tracking-tight">Espaço do RH</h1>
@@ -871,6 +1030,31 @@ function HrPlansView({ section }: { section: "people" | "plans" }) {
       {error && <p className="mt-5 rounded-xl border border-red-200 bg-red-50 px-4 py-3 text-sm font-semibold text-red-700" role="alert">{error}</p>}
       {notice && <p className="mt-5 rounded-xl border border-emerald-200 bg-emerald-50 px-4 py-3 text-sm font-semibold text-emerald-700" role="status">{notice}</p>}
 
+      {section === "files" && <div className="mt-6 space-y-6">
+        <header><p className="eyebrow">Biblioteca do RH</p><h2 className="mt-1 text-2xl font-extrabold">Arquivos e materiais</h2><p className="mt-2 max-w-2xl text-sm leading-6 text-[#777a91]">Cadastre um material uma vez e associe-o a quantas jornadas precisar. Arquivos pessoais ficam visíveis somente para a pessoa escolhida.</p></header>
+        <form className="content-panel space-y-4" onSubmit={saveResource}>
+          <div className="flex flex-wrap items-start justify-between gap-2"><div><p className="eyebrow">{editingResourceId ? "Editar cadastro" : "Novo cadastro"}</p><h3 className="mt-1 text-lg font-extrabold">{editingResourceId ? "Atualizar arquivo" : "Adicionar arquivo ou link"}</h3></div>{editingResourceId && <button className="text-xs font-bold text-[#5b5cd5]" onClick={resetResourceDraft} type="button">Cancelar edição</button>}</div>
+          <div className="grid gap-3 md:grid-cols-2">
+            <label><span className="mb-2 block text-xs font-bold leading-5 text-[#55576d]">Nome</span><input required maxLength={180} className="w-full rounded-lg border border-[#e3e3ed] bg-white px-3 py-2.5 text-sm" value={resourceDraft.title} onChange={(event) => setResourceDraft((current) => ({ ...current, title: event.target.value }))} /></label>
+            <label><span className="mb-2 block text-xs font-bold leading-5 text-[#55576d]">Categoria</span><select required className="w-full rounded-lg border border-[#e3e3ed] bg-white px-3 py-2.5 text-sm" value={resourceDraft.categorySlug} onChange={(event) => setResourceDraft((current) => ({ ...current, categorySlug: event.target.value }))}><option value="" disabled>Escolha uma categoria</option>{resourceCategories.map((category) => <option key={category.id} value={category.slug}>{category.name}</option>)}</select></label>
+            <label className="md:col-span-2"><span className="mb-2 block text-xs font-bold leading-5 text-[#55576d]">Descrição</span><input maxLength={1200} className="w-full rounded-lg border border-[#e3e3ed] bg-white px-3 py-2.5 text-sm" value={resourceDraft.description} onChange={(event) => setResourceDraft((current) => ({ ...current, description: event.target.value }))} /></label>
+            <div className="md:col-span-2 flex gap-2">{([ ["file", "Arquivo"], ["link", "Link"] ] as const).map(([sourceType, label]) => <button aria-pressed={resourceDraft.sourceType === sourceType} className={`rounded-lg border px-3 py-2 text-xs font-bold ${resourceDraft.sourceType === sourceType ? "border-[#b8b8f2] bg-[#f0efff] text-[#5556d8]" : "border-[#e3e3ed] bg-white text-[#777a91]"}`} key={sourceType} onClick={() => { setResourceDraft((current) => ({ ...current, sourceType, externalUrl: sourceType === "file" ? "" : current.externalUrl })); setResourceFile(null); }} type="button">{label}</button>)}</div>
+            <div className="md:col-span-2 grid items-start gap-4 md:grid-cols-[minmax(0,0.75fr)_minmax(0,1.25fr)]">
+              <div className="min-w-0 space-y-3"><div><div className="mb-2 flex items-center gap-2"><span className="text-xs font-bold leading-5 text-[#55576d]">Visibilidade do arquivo</span><ResourceVisibilityHelp /></div><div className="inline-flex rounded-xl border border-[#e3e3ed] bg-[#f7f7fb] p-1" role="group" aria-label="Visibilidade do arquivo">{([ ["public", "Público"], ["private", "Privado"] ] as const).map(([scope, label]) => <button aria-pressed={resourceDraft.audienceScope === scope} className={`rounded-lg px-4 py-2 text-xs font-bold transition ${resourceDraft.audienceScope === scope ? "bg-white text-[#5556d8] shadow-sm" : "text-[#777a91]"}`} key={scope} onClick={() => setResourceAudienceScope(scope)} type="button">{label}</button>)}</div></div>
+                {resourceDraft.sourceType === "file" ? <label className="block"><span className="mb-2 block text-xs font-bold leading-5 text-[#55576d]">Arquivo (até 25 MB)</span><input id="hr-resource-file" required={!editingResourceId || Boolean(libraryResources.find((resource) => resource.id === editingResourceId)?.external_url)} type="file" className="w-full rounded-lg border border-[#e3e3ed] bg-white px-3 py-2 text-sm" onChange={(event) => setResourceFile(event.target.files?.[0] ?? null)} />{editingResourceId && !libraryResources.find((resource) => resource.id === editingResourceId)?.external_url && <small className="mt-1 block text-[11px] text-[#85879a]">Deixe vazio para manter o arquivo atual.</small>}</label> : <label className="block"><span className="mb-2 block text-xs font-bold leading-5 text-[#55576d]">Endereço do link</span><input required maxLength={1000} type="url" className="w-full rounded-lg border border-[#e3e3ed] bg-white px-3 py-2.5 text-sm" value={resourceDraft.externalUrl} onChange={(event) => setResourceDraft((current) => ({ ...current, externalUrl: event.target.value }))} placeholder="https://..." /></label>}
+              </div>
+              <div className="min-w-0">{resourceDraft.audienceScope === "private" && <TeamPeoplePicker title="Pessoas com acesso" people={accounts.filter((person) => person.isActive)} selectedIds={resourceDraft.audienceEmployeeIds.map(Number)} onToggle={toggleResourceAudience} />}</div>
+            </div>
+          </div>
+          <div className="flex justify-end border-t border-[#eeeeF4] pt-4"><button className="button-primary h-10 px-4 text-sm" disabled={uploadingResource} type="submit">{uploadingResource ? "Salvando..." : editingResourceId ? "Salvar alterações" : "Adicionar à biblioteca"}</button></div>
+        </form>
+        <section className="content-panel">
+          <div className="flex flex-col gap-4 sm:flex-row sm:items-end sm:justify-between"><div><p className="eyebrow">Catálogo real</p><h3 className="mt-1 text-lg font-extrabold">{libraryResources.length} {libraryResources.length === 1 ? "cadastro" : "cadastros"}</h3></div><input aria-label="Buscar arquivos" className="w-full rounded-xl border border-[#e3e3ed] px-4 py-3 text-sm sm:max-w-sm" type="search" placeholder="Buscar nome, categoria ou pessoa" value={resourceSearch} onChange={(event) => setResourceSearch(event.target.value)} /></div>
+          <div className="mt-4 flex flex-wrap gap-2">{([ ["all", "Todos"], ["shared", "Compartilhados"], ["person", "Por pessoa"] ] as const).map(([filter, label]) => <button aria-pressed={resourceAudienceFilter === filter} className={`rounded-full border px-3 py-2 text-xs font-bold ${resourceAudienceFilter === filter ? "border-[#5b5ce2] bg-[#5b5ce2] text-white" : "border-[#e1e1ea] bg-white text-[#77798e]"}`} key={filter} onClick={() => setResourceAudienceFilter(filter)} type="button">{label}</button>)}</div>
+          {visibleLibraryResources.length ? <div className="mt-4 divide-y divide-[#eeeeF4]">{visibleLibraryResources.map((resource) => { const audienceNames = resource.audience_names ?? []; const isPrivate = Boolean(resource.audience_employee_ids?.length); return <article className="flex flex-wrap items-center justify-between gap-3 py-4" key={resource.id}><div className="min-w-0"><div className="flex flex-wrap items-center gap-2"><h4 className="font-extrabold text-[#303249]">{resource.title}</h4><span className={`rounded-full px-2.5 py-1 text-[10px] font-bold ${isPrivate ? "bg-[#fff1dc] text-[#a9681c]" : "bg-[#eaf7f0] text-[#288b65]"}`}>{isPrivate ? `Privado · ${audienceNames.length} ${audienceNames.length === 1 ? "pessoa" : "pessoas"}` : "Público"}</span></div>{isPrivate && <p className="mt-1 text-xs text-[#777a91]">{audienceNames.join(" · ")}</p>}<p className="mt-1 text-xs text-[#85879a]">{resource.category} · {resource.external_url ? "Link" : resource.format}{resource.description ? ` · ${resource.description}` : ""}</p></div><button className="rounded-lg border border-[#e6e6ef] px-3 py-2 text-xs font-bold text-[#5b5cd5] hover:bg-[#fafafe]" onClick={() => editResource(resource)} type="button">Editar</button></article>; })}</div> : <p className="mt-4 rounded-xl border border-dashed border-[#dedee8] bg-[#fafafe] p-6 text-center text-sm text-[#85879a]">{libraryResources.length ? "Nenhum arquivo corresponde à busca e aos filtros." : "Ainda não há arquivos reais cadastrados. Adicione um arquivo ou link acima."}</p>}
+        </section>
+      </div>}
+
       {section === "people" && <div className="mt-6 flex gap-2 border-b border-[#e8e8f0] pb-3">{([ ["people", "Pessoas"], ["areas", "Áreas"], ["teams", "Equipes"] ] as const).map(([view, label]) => <button aria-pressed={peopleView === view} className={`rounded-xl px-4 py-2.5 text-sm font-bold ${peopleView === view ? "bg-[#f0efff] text-[#5556d8]" : "text-[#777a91] hover:bg-white"}`} key={view} onClick={() => { setPeopleView(view); if (view !== "people") { setShowAccountForm(false); setEditingAccountId(null); } }} type="button">{label}</button>)}</div>}
 
       {section === "people" && peopleView !== "people" && <div className="mt-6 space-y-6">
@@ -878,16 +1062,16 @@ function HrPlansView({ section }: { section: "people" | "plans" }) {
           {peopleView === "areas" && <form className="content-panel" onSubmit={createDepartment}>
             <h2 className="text-lg font-extrabold">Criar área</h2>
             <div className="mt-4 flex flex-col gap-3 md:flex-row md:items-end">
-              <label className="block min-w-0 flex-1"><span className="mb-1.5 block text-xs font-bold text-[#55576d]">Nome da área</span><input required maxLength={100} className="w-full rounded-xl border border-[#e3e3ed] px-4 py-3 text-sm" value={departmentDraft.name} onChange={(event) => setDepartmentDraft((current) => ({ ...current, name: event.target.value }))} placeholder="Ex.: Design" /></label>
-              <label className="block min-w-0 flex-[2]"><span className="mb-1.5 block text-xs font-bold text-[#55576d]">Descrição</span><textarea ref={departmentDescriptionRef} maxLength={300} rows={1} className="min-h-11 w-full resize-none overflow-hidden rounded-xl border border-[#e3e3ed] px-4 py-3 text-sm" value={departmentDraft.description} onChange={(event) => setDepartmentDraft((current) => ({ ...current, description: event.target.value }))} placeholder="Responsabilidades desta área" /></label>
+              <label className="block min-w-0 flex-1"><span className="mb-2 block text-xs font-bold leading-5 text-[#55576d]">Nome da área</span><input required maxLength={100} className="w-full rounded-xl border border-[#e3e3ed] px-4 py-3 text-sm" value={departmentDraft.name} onChange={(event) => setDepartmentDraft((current) => ({ ...current, name: event.target.value }))} placeholder="Ex.: Design" /></label>
+              <label className="block min-w-0 flex-[2]"><span className="mb-2 block text-xs font-bold leading-5 text-[#55576d]">Descrição</span><textarea ref={departmentDescriptionRef} maxLength={300} rows={1} className="min-h-11 w-full resize-none overflow-hidden rounded-xl border border-[#e3e3ed] px-4 py-3 text-sm" value={departmentDraft.description} onChange={(event) => setDepartmentDraft((current) => ({ ...current, description: event.target.value }))} placeholder="Responsabilidades desta área" /></label>
               <button className="button-primary h-11 shrink-0 px-4" disabled={savingOrganization} type="submit">Criar área</button>
             </div>
           </form>}
           {peopleView === "teams" && <form className="content-panel" onSubmit={createTeam}>
             <div><p className="eyebrow">Grupos de trabalho</p><h2 className="mt-1 text-lg font-extrabold">Criar equipe</h2><p className="mt-1 text-sm text-[#85879a]">Equipes são independentes das áreas e podem reunir pessoas de áreas diferentes.</p></div>
             <div className="mt-4 grid gap-3 md:grid-cols-2 xl:grid-cols-3">
-              <label className="block min-w-0"><span className="mb-1.5 block text-xs font-bold text-[#55576d]">Nome da equipe</span><input required maxLength={120} className="w-full rounded-xl border border-[#e3e3ed] px-4 py-3 text-sm" value={teamDraft.name} onChange={(event) => setTeamDraft((current) => ({ ...current, name: event.target.value }))} placeholder="Ex.: Plataforma" /></label>
-              <label className="block min-w-0"><span className="mb-1.5 block text-xs font-bold text-[#55576d]">Descrição</span><input maxLength={300} className="w-full rounded-xl border border-[#e3e3ed] px-4 py-3 text-sm" value={teamDraft.description} onChange={(event) => setTeamDraft((current) => ({ ...current, description: event.target.value }))} placeholder="Objetivo ou foco da equipe" /></label>
+              <label className="block min-w-0"><span className="mb-2 block text-xs font-bold leading-5 text-[#55576d]">Nome da equipe</span><input required maxLength={120} className="w-full rounded-xl border border-[#e3e3ed] px-4 py-3 text-sm" value={teamDraft.name} onChange={(event) => setTeamDraft((current) => ({ ...current, name: event.target.value }))} placeholder="Ex.: Plataforma" /></label>
+              <label className="block min-w-0"><span className="mb-2 block text-xs font-bold leading-5 text-[#55576d]">Descrição</span><input maxLength={300} className="w-full rounded-xl border border-[#e3e3ed] px-4 py-3 text-sm" value={teamDraft.description} onChange={(event) => setTeamDraft((current) => ({ ...current, description: event.target.value }))} placeholder="Objetivo ou foco da equipe" /></label>
               <TeamParentPicker teams={teamRows} value={teamDraft.parentTeamId} onChange={(parentTeamId) => setTeamDraft((current) => ({ ...current, parentTeamId }))} />
             </div>
             <div className="mt-4 grid gap-3 md:grid-cols-2">
@@ -934,7 +1118,7 @@ function HrPlansView({ section }: { section: "people" | "plans" }) {
           <label><span className="mb-2 block text-xs font-bold text-[#55576d]">Nome completo</span><input required maxLength={160} className="w-full rounded-xl border border-[#e3e3ed] px-3 py-3 text-sm" value={accountDraft.name} onChange={(event) => setAccountDraft((current) => ({ ...current, name: event.target.value }))} /></label>
           <label><span className="mb-2 block text-xs font-bold text-[#55576d]">E-mail</span><input required type="email" maxLength={254} className="w-full rounded-xl border border-[#e3e3ed] px-3 py-3 text-sm" value={accountDraft.email} onChange={(event) => setAccountDraft((current) => ({ ...current, email: event.target.value }))} /></label>
           <label><span className="mb-2 block text-xs font-bold text-[#55576d]">Cargo</span><input maxLength={120} className="w-full rounded-xl border border-[#e3e3ed] px-3 py-3 text-sm" value={accountDraft.jobTitle} onChange={(event) => setAccountDraft((current) => ({ ...current, jobTitle: event.target.value }))} /></label>
-          <label><span className="mb-2 block text-xs font-bold text-[#55576d]">Data de entrada</span><input required type="date" className="w-full rounded-xl border border-[#e3e3ed] bg-white px-3 py-3 text-sm" value={accountDraft.startDate} onChange={(event) => setAccountDraft((current) => ({ ...current, startDate: event.target.value }))} /></label>
+          <label><span className="mb-2 block text-xs font-bold text-[#55576d]">Data de entrada (opcional)</span><input type="date" className="w-full rounded-xl border border-[#e3e3ed] bg-white px-3 py-3 text-sm" value={accountDraft.startDate} onChange={(event) => setAccountDraft((current) => ({ ...current, startDate: event.target.value }))} /><small className="mt-1 block text-xs text-[#85879a]">Deixe vazia se a pessoa já trabalha na empresa ou ainda não tem uma data definida.</small></label>
           <label><span className="mb-2 block text-xs font-bold text-[#55576d]">Pessoa mentora</span><select className="w-full rounded-xl border border-[#e3e3ed] bg-white px-3 py-3 text-sm" value={accountDraft.mentorEmployeeId} onChange={(event) => setAccountDraft((current) => ({ ...current, mentorEmployeeId: event.target.value }))}><option value="">Sem pessoa mentora definida</option>{accounts.filter((person) => person.isActive && person.id !== editingAccountId && person.id !== Number(accountDraft.managerEmployeeId)).map((person) => <option key={person.id} value={person.id}>{person.name}{person.jobTitle ? ` · ${person.jobTitle}` : ""}</option>)}</select></label>
           <div><label className="mb-2 block text-xs font-bold text-[#55576d]">Áreas</label>{departments.length ? <details className="group relative"><summary className="flex min-h-11 cursor-pointer list-none items-center justify-between gap-3 rounded-xl border border-[#e3e3ed] bg-white px-3 py-3 text-sm text-[#45475d] outline-none focus-visible:border-[#7778e5] [&::-webkit-details-marker]:hidden"><span className="truncate">{accountDraft.departmentIds.length ? departments.filter((department) => accountDraft.departmentIds.includes(department.id)).map((department) => department.name).join(", ") : "Selecione as áreas"}</span><span className="shrink-0 rotate-90 transition-transform group-open:-rotate-90"><Icon name="chevron" size={15} /></span></summary><div className="absolute inset-x-0 top-full z-20 mt-2 max-h-56 overflow-y-auto rounded-xl border border-[#e3e3ed] bg-white p-2 shadow-xl">{departments.map((department) => <label className="flex cursor-pointer items-center gap-2 rounded-lg px-2 py-2 text-sm text-[#45475d] hover:bg-[#f7f7fc]" key={department.id}><input className="size-4 accent-[#5b5ce2]" type="checkbox" checked={accountDraft.departmentIds.includes(department.id)} onChange={() => toggleDepartmentSelection(department.id)} />{department.name}</label>)}</div></details> : <button className="text-xs font-bold text-[#5556d8]" onClick={() => { setPeopleView("areas"); setShowAccountForm(false); }} type="button">Crie uma área primeiro</button>}</div>
           <div><label className="mb-2 block text-xs font-bold text-[#55576d]">Permissões de preparação</label>{departments.length ? <details className="group relative"><summary className="flex min-h-11 cursor-pointer list-none items-center justify-between gap-3 rounded-xl border border-[#e3e3ed] bg-white px-3 py-3 text-sm text-[#45475d] outline-none focus-visible:border-[#7778e5] [&::-webkit-details-marker]:hidden"><span className="truncate">{accountDraft.preparationDepartmentIds.length ? departments.filter((department) => accountDraft.preparationDepartmentIds.includes(department.id)).map((department) => department.name).join(", ") : "Sem acesso de preparação delegado"}</span><span className="shrink-0 rotate-90 transition-transform group-open:-rotate-90"><Icon name="chevron" size={15} /></span></summary><div className="absolute inset-x-0 top-full z-30 mt-2 max-h-56 overflow-y-auto rounded-xl border border-[#e3e3ed] bg-white p-2 shadow-xl">{departments.map((department) => <label className="flex cursor-pointer items-center gap-2 rounded-lg px-2 py-2 text-sm text-[#45475d] hover:bg-[#f7f7fc]" key={department.id}><input className="size-4 accent-[#5b5ce2]" type="checkbox" checked={accountDraft.preparationDepartmentIds.includes(department.id)} onChange={() => togglePreparationDepartmentSelection(department.id)} />{department.name}</label>)}</div></details> : <span className="text-xs text-[#85879a]">Cadastre uma área para delegar permissões.</span>}</div>
@@ -965,23 +1149,24 @@ function HrPlansView({ section }: { section: "people" | "plans" }) {
           {showPresetForm && <form className="mt-5 rounded-xl border border-[#e6e6ef] bg-[#fafafe] p-4" onSubmit={savePreset}>
             <div className="flex flex-wrap items-start justify-between gap-3"><div><p className="eyebrow">Novo pacote</p><h3 className="mt-1 font-extrabold">Monte uma lista reutilizável</h3></div></div>
             <div className="mt-4 grid gap-3 md:grid-cols-2">
-              <label><span className="mb-1.5 block text-xs font-bold text-[#55576d]">Nome do pacote</span><input required maxLength={120} className="w-full rounded-lg border border-[#e3e3ed] bg-white px-3 py-2.5 text-sm" placeholder="Ex.: Contas de programador" value={presetName} onChange={(event) => setPresetName(event.target.value)} /></label>
-              <label><span className="mb-1.5 block text-xs font-bold text-[#55576d]">Quando usar (opcional)</span><input maxLength={500} className="w-full rounded-lg border border-[#e3e3ed] bg-white px-3 py-2.5 text-sm" placeholder="Ex.: Para pessoas que entram em desenvolvimento" value={presetDescription} onChange={(event) => setPresetDescription(event.target.value)} /></label>
+              <label><span className="mb-2 block text-xs font-bold leading-5 text-[#55576d]">Nome do pacote</span><input required maxLength={120} className="w-full rounded-lg border border-[#e3e3ed] bg-white px-3 py-2.5 text-sm" placeholder="Ex.: Contas de programador" value={presetName} onChange={(event) => setPresetName(event.target.value)} /></label>
+              <label><span className="mb-2 block text-xs font-bold leading-5 text-[#55576d]">Quando usar (opcional)</span><input maxLength={500} className="w-full rounded-lg border border-[#e3e3ed] bg-white px-3 py-2.5 text-sm" placeholder="Ex.: Para pessoas que entram em desenvolvimento" value={presetDescription} onChange={(event) => setPresetDescription(event.target.value)} /></label>
             </div>
             <div className="mt-5 rounded-xl border border-[#e6e6ef] bg-white p-4">
               <p className="text-sm font-extrabold text-[#45475d]">Adicionar uma tarefa ao pacote</p>
               <div className="mt-3 grid gap-3 md:grid-cols-2">
-                <label><span className="mb-1.5 block text-xs font-bold text-[#55576d]">Etapa</span><select required className="w-full rounded-lg border border-[#e3e3ed] bg-white px-3 py-2.5 text-sm" value={presetTaskDraft.stageTemplateId} onChange={(event) => setPresetTaskDraft((current) => ({ ...current, stageTemplateId: event.target.value }))}>{stages.map((stage) => <option key={stage.id} value={stage.id}>{stage.name}</option>)}</select></label>
-                <label><span className="mb-1.5 block text-xs font-bold text-[#55576d]">Título da tarefa</span><input maxLength={180} className="w-full rounded-lg border border-[#e3e3ed] px-3 py-2.5 text-sm" placeholder="Ex.: Criar conta de desenvolvimento" value={presetTaskDraft.title} onChange={(event) => setPresetTaskDraft((current) => ({ ...current, title: event.target.value }))} /></label>
-                <label className="md:col-span-2"><span className="mb-1.5 block text-xs font-bold text-[#55576d]">O que a pessoa deve fazer?</span><textarea maxLength={1000} className="min-h-20 w-full rounded-lg border border-[#e3e3ed] px-3 py-2.5 text-sm" placeholder="Descreva o que precisa acontecer e como saber que foi concluído." value={presetTaskDraft.description} onChange={(event) => setPresetTaskDraft((current) => ({ ...current, description: event.target.value }))} /></label>
-                <label><span className="mb-1.5 block text-xs font-bold text-[#55576d]">Tipo de atividade</span><select className="w-full rounded-lg border border-[#e3e3ed] bg-white px-3 py-2.5 text-sm" value={presetTaskDraft.taskType} onChange={(event) => setPresetTaskDraft((current) => ({ ...current, taskType: event.target.value as PlanTask["taskType"] }))}>{Object.entries(taskTypeLabels).map(([value, label]) => <option key={value} value={value}>{label}</option>)}</select></label>
-                <label><span className="mb-1.5 block text-xs font-bold text-[#55576d]">Categoria da preparação</span><select className="w-full rounded-lg border border-[#e3e3ed] bg-white px-3 py-2.5 text-sm" value={presetTaskDraft.category} onChange={(event) => setPresetTaskDraft((current) => ({ ...current, category: event.target.value }))}>{preparationCategories.map((category) => <option key={category} value={category}>{category}</option>)}</select></label>
-                <div className="relative"><label className="mb-1.5 block text-xs font-bold text-[#55576d]" htmlFor="preset-responsible-search">Pessoa responsável</label><input id="preset-responsible-search" className="w-full rounded-lg border border-[#e3e3ed] bg-white px-3 py-2.5 text-sm" placeholder="Buscar pelo nome" value={presetResponsibleSearch} onChange={(event) => { setPresetResponsibleSearch(event.target.value); setPresetTaskDraft((current) => ({ ...current, ownerEmployeeId: "" })); }} />
+                <label><span className="mb-2 block text-xs font-bold leading-5 text-[#55576d]">Etapa</span><select required className="w-full rounded-lg border border-[#e3e3ed] bg-white px-3 py-2.5 text-sm" value={presetTaskDraft.stageTemplateId} onChange={(event) => setPresetTaskDraft((current) => changeTaskDraftStage(current, event.target.value, stages))}>{stages.map((stage) => <option key={stage.id} value={stage.id}>{stage.name}</option>)}</select></label>
+                <label><span className="mb-2 block text-xs font-bold leading-5 text-[#55576d]">Título da tarefa</span><input maxLength={180} className="w-full rounded-lg border border-[#e3e3ed] px-3 py-2.5 text-sm" placeholder="Ex.: Criar conta de desenvolvimento" value={presetTaskDraft.title} onChange={(event) => setPresetTaskDraft((current) => ({ ...current, title: event.target.value }))} /></label>
+                <label className="md:col-span-2"><span className="mb-2 block text-xs font-bold leading-5 text-[#55576d]">O que a pessoa deve fazer?</span><textarea maxLength={1000} className="min-h-20 w-full rounded-lg border border-[#e3e3ed] px-3 py-2.5 text-sm" placeholder="Descreva o que precisa acontecer e como saber que foi concluído." value={presetTaskDraft.description} onChange={(event) => setPresetTaskDraft((current) => ({ ...current, description: event.target.value }))} /></label>
+                <label><span className="mb-2 block text-xs font-bold leading-5 text-[#55576d]">Tipo de atividade</span><select className="w-full rounded-lg border border-[#e3e3ed] bg-white px-3 py-2.5 text-sm" value={presetTaskDraft.taskType} onChange={(event) => setPresetTaskDraft((current) => ({ ...current, taskType: event.target.value as PlanTask["taskType"] }))}>{taskTypesForStage(stages, presetTaskDraft.stageTemplateId).map(([value, label]) => <option key={value} value={value}>{label}</option>)}</select></label>
+                <label><span className="mb-2 block text-xs font-bold leading-5 text-[#55576d]">Categoria</span><select className="w-full rounded-lg border border-[#e3e3ed] bg-white px-3 py-2.5 text-sm" value={presetTaskDraft.category} onChange={(event) => setPresetTaskDraft((current) => ({ ...current, category: event.target.value }))}>{taskCategoriesForStage(stages, presetTaskDraft.stageTemplateId, presetTaskDraft.category).map((category) => <option key={category} value={category}>{category}</option>)}</select></label>
+                {isPreEntryStage(stages, presetTaskDraft.stageTemplateId) && <TaskDepartmentAccessPicker departments={departments} selectedIds={presetTaskDraft.responsibleDepartmentIds} onToggle={(id) => setPresetTaskDraft((current) => ({ ...current, responsibleDepartmentIds: current.responsibleDepartmentIds.includes(String(id)) ? current.responsibleDepartmentIds.filter((value) => value !== String(id)) : [...current.responsibleDepartmentIds, String(id)] }))} />}
+                {isPreEntryStage(stages, presetTaskDraft.stageTemplateId) && <SuggestedOwnerPicker departments={departments} teams={teams} kind={presetTaskDraft.ownerKind} groupId={presetTaskDraft.ownerGroupId} onSelect={(kind, id) => setPresetTaskDraft((current) => ({ ...current, ownerKind: kind, ownerGroupId: id }))} />}
+                {!isPreEntryStage(stages, presetTaskDraft.stageTemplateId) && <div className="relative" ref={presetResponsiblePickerRef}><label className="mb-2 block text-xs font-bold leading-5 text-[#55576d]" htmlFor="preset-responsible-search">Pessoa responsável</label><input id="preset-responsible-search" className="w-full rounded-lg border border-[#e3e3ed] bg-white px-3 py-2.5 text-sm" placeholder="Buscar pelo nome" value={presetResponsibleSearch} onChange={(event) => { setPresetResponsibleSearch(event.target.value); setPresetTaskDraft((current) => ({ ...current, ownerEmployeeId: "" })); }} />
                   {presetTaskDraft.ownerEmployeeId && (() => { const person = responsiblePeople.find(({ id }) => id === Number(presetTaskDraft.ownerEmployeeId)); return person ? <div className="mt-2 flex items-center justify-between gap-3 rounded-lg border border-[#c9c8ed] bg-[#f7f6ff] px-3 py-2"><div className="min-w-0"><strong className="block truncate text-xs text-[#303249]">{person.name}</strong><small className="block truncate text-[10px] text-[#777a91]">{person.jobTitle ?? "Cargo não informado"} · {person.department ?? "Sem área"}</small></div><button className="shrink-0 text-[10px] font-bold text-[#5556d8]" onClick={() => setPresetTaskDraft((current) => ({ ...current, ownerEmployeeId: "" }))} type="button">Trocar</button></div> : null; })()}
                   {!presetTaskDraft.ownerEmployeeId && presetResponsibleSearch.trim() && <div className="absolute inset-x-0 top-full z-10 mt-1 space-y-1 rounded-xl border border-[#e5e5ef] bg-white p-2 shadow-lg">{responsibleMatches(presetResponsibleSearch).length ? responsibleMatches(presetResponsibleSearch).map((person) => <button className="w-full rounded-lg border border-transparent px-3 py-2 text-left hover:border-[#e5e4fa] hover:bg-[#f8f7ff]" key={person.id} onClick={() => { setPresetTaskDraft((current) => ({ ...current, ownerEmployeeId: String(person.id), responsibleDepartmentId: current.responsibleDepartmentId || String(person.departmentId ?? "") })); setPresetResponsibleSearch(""); }} type="button"><strong className="block truncate text-xs text-[#303249]">{person.name}</strong><small className="mt-0.5 block truncate text-[10px] text-[#777a91]">{person.jobTitle ?? "Cargo não informado"} · {person.department ?? "Sem área"}</small></button>) : <p className="px-3 py-2 text-xs text-[#85879a]">Nenhuma pessoa encontrada.</p>}</div>}
-                </div>
-                <label><span className="mb-1.5 block text-xs font-bold text-[#55576d]">Área responsável</span><select className="w-full rounded-lg border border-[#e3e3ed] bg-white px-3 py-2.5 text-sm" value={presetTaskDraft.responsibleDepartmentId} onChange={(event) => setPresetTaskDraft((current) => ({ ...current, responsibleDepartmentId: event.target.value }))}><option value="">Usar a área da pessoa responsável</option>{departments.map((department) => <option key={department.id} value={department.id}>{department.name}</option>)}</select></label>
-                <label><span className="mb-1.5 block text-xs font-bold text-[#55576d]">Prazo relativo à entrada (dias)</span><input min={-32768} max={32767} type="number" className="w-full rounded-lg border border-[#e3e3ed] bg-white px-3 py-2.5 text-sm" value={presetTaskDraft.dueOffsetDays} onChange={(event) => setPresetTaskDraft((current) => ({ ...current, dueOffsetDays: event.target.value }))} /><small className="mt-1 block text-[10px] text-[#85879a]">Use valor negativo para um prazo antes da entrada.</small></label>
+                </div>}
+                <label><span className="mb-2 block text-xs font-bold leading-5 text-[#55576d]">Prazo relativo à entrada (dias)</span><input min={-32768} max={32767} type="number" className="w-full rounded-lg border border-[#e3e3ed] bg-white px-3 py-2.5 text-sm" value={presetTaskDraft.dueOffsetDays} onChange={(event) => setPresetTaskDraft((current) => ({ ...current, dueOffsetDays: event.target.value }))} /><small className="mt-1 block text-[10px] text-[#85879a]">Use valor negativo para um prazo antes da entrada.</small></label>
                 <label className="flex items-center gap-2 text-sm font-semibold text-[#55576d]"><input className="size-4 accent-[#5b5ce2]" type="checkbox" checked={presetTaskDraft.required} onChange={(event) => setPresetTaskDraft((current) => ({ ...current, required: event.target.checked }))} />Obrigatória por padrão</label>
               </div>
               <div className="mt-3 flex justify-end"><button className="rounded-lg border border-[#dedeea] px-4 py-2.5 text-sm font-bold text-[#5556d8]" onClick={addPresetTask} type="button">Adicionar tarefa ao pacote</button></div>
@@ -1006,86 +1191,94 @@ function HrPlansView({ section }: { section: "people" | "plans" }) {
           )}
 
           {selectedAccount && <div className="content-panel">
-            <div className="flex flex-wrap items-start justify-between gap-3">
-              <div><p className="eyebrow">Etapa da jornada</p><h2 className="mt-1 text-lg font-extrabold">Tarefas e materiais</h2></div>
-              <select aria-label="Filtrar etapa" className="rounded-xl border border-[#e3e3ed] bg-white px-3 py-2 text-sm font-bold text-[#45475d]" value={selectedStageId ?? ""} onChange={(event) => { const value = Number(event.target.value); setSelectedStageId(value); resetDraft(value); }}>
-                {stages.map((stage) => <option key={stage.id} value={stage.id}>{stage.name}</option>)}
-              </select>
+            <div><p className="eyebrow">Etapa da jornada</p><h2 className="mt-1 text-lg font-extrabold">Tarefas e materiais</h2></div>
+            <div aria-label="Etapas da jornada" className="mt-4 grid grid-cols-2 gap-2 sm:grid-cols-4" role="group">
+              {stages.map((stage, index) => <button aria-pressed={selectedStageId === stage.id} className={`flex min-h-12 items-center justify-center gap-2 rounded-xl border px-3 py-2 text-center text-xs font-bold transition sm:text-sm ${selectedStageId === stage.id ? "border-[#5b5ce2] bg-[#f0efff] text-[#5556d8] shadow-sm" : "border-[#e3e3ed] bg-white text-[#777a91] hover:border-[#c9c8ed] hover:bg-[#fafafe]"}`} key={stage.id} onClick={() => { setSelectedStageId(stage.id); resetDraft(stage.id); }} type="button"><span className={`grid size-6 shrink-0 place-items-center rounded-full text-[10px] ${selectedStageId === stage.id ? "bg-[#5b5ce2] text-white" : "bg-[#f2f2f7] text-[#777a91]"}`}>{index + 1}</span><span className="min-w-0">{stage.name}</span></button>)}
             </div>
             {selectedStage && <p className="mt-2 text-xs text-[#85879a]">{selectedStage.duration_label ?? "Etapa do onboarding"}</p>}
+            {selectedStage?.code === "pre-entry" && <div className="mt-4 flex flex-wrap items-center gap-2 rounded-xl border border-[#e4e3fb] bg-[#f8f7ff] px-4 py-3"><span className="rounded-full bg-white px-2.5 py-1 text-[10px] font-extrabold uppercase tracking-wide text-[#5556d8]">Pré-entrada</span><p className="text-xs font-medium text-[#55576d]">Estas tarefas seguem o fluxo de preparação e ficam agrupadas por categoria.</p></div>}
 
             {loadingPlan ? <p className="mt-5 text-sm text-[#85879a]">Carregando padrão desta conta...</p> : stageTasks.length ? (
               <div className="mt-5 space-y-3">
-                {stageTasks.map((task) => (
+                {stageTaskGroups.map((group) => <section className="space-y-3" key={group.category || "all-tasks"}>
+                  {selectedStage?.code === "pre-entry" && <header className="flex items-center gap-3 border-b border-[#e7e7f0] pb-2"><span aria-hidden="true" className="h-5 w-1 rounded-full bg-[#6566dc]" /><h3 className="text-sm font-extrabold text-[#303249]">{group.category}</h3><span className="rounded-full bg-[#f0efff] px-2.5 py-1 text-[10px] font-bold text-[#5556d8]">{group.tasks.length} {group.tasks.length === 1 ? "item" : "itens"}</span></header>}
+                  {group.tasks.map((task) => (
                   <article className={`flex flex-wrap items-start gap-3 rounded-xl border p-4 transition ${excludedTaskIds.includes(task.id) ? "border-[#ededf3] bg-[#fafafe] opacity-60" : "border-[#ededf3] bg-white"}`} key={task.id}>
                     <span className="grid size-9 shrink-0 place-items-center rounded-xl bg-[#f1f0ff] text-[#5b5ce2]"><Icon name={task.taskType === "training" ? "book" : task.taskType === "checkin" ? "calendar" : "check"} size={17} /></span>
-                    <div className="min-w-0 flex-1"><div className="flex flex-wrap items-center gap-2"><h3 className="font-extrabold text-[#303249]">{task.title}</h3><span className="rounded-full bg-[#f5f5f9] px-2 py-1 text-[10px] font-bold text-[#777a91]">{task.category}</span><span className={`rounded-full px-2 py-1 text-[10px] font-bold ${task.required ? "bg-[#fff1dc] text-[#a9681c]" : "bg-[#f1f1f5] text-[#777a91]"}`}>{task.required ? "Obrigatória" : "Opcional"}</span>{excludedTaskIds.includes(task.id) && <span className="rounded-full bg-red-50 px-2 py-1 text-[10px] font-bold text-red-700">Fora da jornada</span>}</div><p className="mt-1 text-xs leading-5 text-[#85879a]">{task.description || "Sem descrição."}</p><p className="mt-2 text-[10px] font-bold text-[#777a91]">Pessoa responsável: {task.ownerEmployeeId ? task.ownerName ?? task.ownerRole : "Responsável não definido — edite para escolher uma pessoa"} · Prazo: {formatDueOffset(task.dueOffsetDays)}</p></div>
+                    <div className="min-w-0 flex-1"><div className="flex flex-wrap items-center gap-2"><h3 className="font-extrabold text-[#303249]">{task.title}</h3>{selectedStage?.code !== "pre-entry" && <span className="rounded-full bg-[#f5f5f9] px-2 py-1 text-[10px] font-bold text-[#777a91]">{task.category}</span>}<span className={`rounded-full px-2 py-1 text-[10px] font-bold ${task.required ? "bg-[#fff1dc] text-[#a9681c]" : "bg-[#f1f1f5] text-[#777a91]"}`}>{task.required ? "Obrigatória" : "Opcional"}</span>{excludedTaskIds.includes(task.id) && <span className="rounded-full bg-red-50 px-2 py-1 text-[10px] font-bold text-red-700">Fora da jornada</span>}</div><p className="mt-1 text-xs leading-5 text-[#85879a]">{task.description || "Sem descrição."}</p><p className="mt-2 text-[10px] font-bold text-[#777a91]">Pessoa responsável: {task.ownerEmployeeId ? task.ownerName ?? task.ownerRole : "Responsável não definido — edite para escolher uma pessoa"} · Prazo: {formatDueOffset(task.dueOffsetDays)}</p></div>
                     <div className="flex flex-wrap items-center gap-2"><label className="flex items-center gap-1.5 text-xs font-bold text-[#55576d]"><input className="size-4 accent-[#5b5ce2]" type="checkbox" checked={!excludedTaskIds.includes(task.id)} onChange={(event) => setExcludedTaskIds((current) => event.target.checked ? current.filter((id) => id !== task.id) : [...current, task.id])} />Incluir</label><button aria-label={`Editar ${task.title}`} className="rounded-lg border border-[#e6e6ef] px-3 py-2 text-xs font-bold text-[#5b5ce2] hover:bg-[#f6f5ff]" onClick={() => editTask(task)} type="button">Editar</button><button aria-label={`Remover ${task.title}`} className="rounded-lg border border-[#f1dada] px-3 py-2 text-xs font-bold text-[#b84f4f] hover:bg-red-50" onClick={() => removeTask(task.id)} type="button">Remover</button></div>
                   </article>
-                ))}
+                  ))}
+                </section>)}
               </div>
             ) : <div className="mt-5 rounded-xl border border-dashed border-[#dedeeb] bg-[#fafafe] p-6 text-center"><p className="text-sm font-bold text-[#55576d]">Ainda sem tarefas nesta etapa</p><p className="mt-1 text-xs text-[#85879a]">Adicione tarefas para definir o padrão desta conta.</p></div>}
 
             <div className="mt-7 border-t border-[#eeeeF4] pt-5">
               <div className="flex flex-wrap items-end justify-between gap-2"><div><p className="eyebrow">Biblioteca</p><h3 className="mt-1 font-extrabold">Materiais desta etapa</h3></div><span className="text-xs text-[#85879a]">{planResources.filter((item) => item.stageTemplateId === selectedStageId).length} selecionados</span></div>
-              <form className="mt-4 rounded-xl border border-dashed border-[#d8d8e7] bg-[#fafafe] p-4" onSubmit={saveResource}>
+              <input aria-label="Buscar materiais para esta jornada" className="mt-4 w-full rounded-xl border border-[#e3e3ed] px-4 py-3 text-sm" type="search" placeholder="Buscar arquivos por nome ou categoria" value={resourceSearch} onChange={(event) => setResourceSearch(event.target.value)} />
+              {stageLibraryResources.length ? <div className="mt-3 grid gap-2 sm:grid-cols-2">
+                {stageLibraryResources.map((resource) => {
+                  const checked = planResources.some((item) => item.stageTemplateId === selectedStageId && item.resourceId === resource.id);
+                  return <div className={`flex items-start gap-3 rounded-xl border p-3 transition ${checked ? "border-[#b8b8f2] bg-[#f7f6ff]" : "border-[#ededf3] bg-white hover:bg-[#fafafe]"}`} key={resource.id}>
+                    <label className="flex min-w-0 flex-1 cursor-pointer items-start gap-3"><input className="mt-1 size-4 accent-[#5b5ce2]" type="checkbox" checked={checked} onChange={(event) => toggleResource(resource, event.target.checked)} /><span className="min-w-0"><strong className="block text-sm text-[#303249]">{resource.title}</strong><small className="mt-1 block truncate text-xs text-[#85879a]">{resource.category} · {resource.external_url ? "Link" : resource.format} · {resource.audience_employee_ids?.length ? `Privado · ${resource.audience_names?.join(", ")}` : "Público"}</small></span></label>
+                    <button className="shrink-0 rounded-lg border border-[#e6e6ef] px-2.5 py-1.5 text-[11px] font-bold text-[#5b5cd5] hover:bg-white" onClick={() => editResource(resource)} type="button">Editar</button>
+                  </div>;
+                })}
+              </div> : <p className="mt-3 rounded-xl bg-[#fafafe] p-4 text-sm text-[#85879a]">Nenhum material encontrado para esta pessoa e busca. Arquivos destinados a outra pessoa não aparecem aqui.</p>}
+              <div className="mt-5 grid gap-3 sm:grid-cols-2">
+                <button className="flex min-h-14 items-center justify-center gap-2 rounded-xl border border-[#d9d8f3] bg-[#f7f6ff] px-4 py-3 text-sm font-extrabold text-[#5556d8] transition hover:bg-[#efeeff]" onClick={() => { resetResourceDraft(); resetDraft(); setPlanAction("task"); }} type="button"><Icon name="check" size={18} />Adicionar tarefa</button>
+                <button className="flex min-h-14 items-center justify-center gap-2 rounded-xl border border-[#d9d8f3] bg-white px-4 py-3 text-sm font-extrabold text-[#5556d8] transition hover:bg-[#f7f6ff]" onClick={() => { resetResourceDraft(); resetDraft(); setPlanAction("file"); }} type="button"><Icon name="book" size={18} />Adicionar arquivo</button>
+              </div>
+              {planAction === "file" && <form className="mt-4 rounded-xl border border-dashed border-[#d8d8e7] bg-[#fafafe] p-4" onSubmit={saveResource} ref={planActionEditorRef}>
                 <div className="flex flex-wrap items-center justify-between gap-2">
                   <p className="text-sm font-extrabold text-[#45475d]">{editingResourceId ? "Editar material" : "Novo material para esta etapa"}</p>
                   {editingResourceId && <button className="text-xs font-bold text-[#5b5cd5]" onClick={resetResourceDraft} type="button">Cancelar edição</button>}
                 </div>
                 <div className="mt-3 grid gap-3 md:grid-cols-2">
-                  <label><span className="mb-1.5 block text-xs font-bold text-[#55576d]">Título do material</span><input required maxLength={180} className="w-full rounded-lg border border-[#e3e3ed] bg-white px-3 py-2.5 text-sm" value={resourceDraft.title} onChange={(event) => setResourceDraft((current) => ({ ...current, title: event.target.value }))} /></label>
-                  <label><span className="mb-1.5 block text-xs font-bold text-[#55576d]">Categoria</span><select required className="w-full rounded-lg border border-[#e3e3ed] bg-white px-3 py-2.5 text-sm" value={resourceDraft.categorySlug} onChange={(event) => setResourceDraft((current) => ({ ...current, categorySlug: event.target.value }))}><option value="" disabled>Escolha uma categoria</option>{resourceCategories.map((category) => <option key={category.id} value={category.slug}>{category.name}</option>)}</select></label>
-                  <label><span className="mb-1.5 block text-xs font-bold text-[#55576d]">Descrição</span><input maxLength={1200} className="w-full rounded-lg border border-[#e3e3ed] bg-white px-3 py-2.5 text-sm" value={resourceDraft.description} onChange={(event) => setResourceDraft((current) => ({ ...current, description: event.target.value }))} /></label>
+                  <label><span className="mb-2 block text-xs font-bold leading-5 text-[#55576d]">Título do material</span><input required maxLength={180} className="w-full rounded-lg border border-[#e3e3ed] bg-white px-3 py-2.5 text-sm" value={resourceDraft.title} onChange={(event) => setResourceDraft((current) => ({ ...current, title: event.target.value }))} /></label>
+                  <label><span className="mb-2 block text-xs font-bold leading-5 text-[#55576d]">Categoria</span><select required className="w-full rounded-lg border border-[#e3e3ed] bg-white px-3 py-2.5 text-sm" value={resourceDraft.categorySlug} onChange={(event) => setResourceDraft((current) => ({ ...current, categorySlug: event.target.value }))}><option value="" disabled>Escolha uma categoria</option>{resourceCategories.map((category) => <option key={category.id} value={category.slug}>{category.name}</option>)}</select></label>
                   <div className="md:col-span-2">
-                    <span className="mb-1.5 block text-xs font-bold text-[#55576d]">Tipo de material</span>
+                    <span className="mb-2 block text-xs font-bold leading-5 text-[#55576d]">Tipo de material</span>
                     <div className="flex gap-2">
                       {(["file", "link"] as const).map((sourceType) => <button aria-pressed={resourceDraft.sourceType === sourceType} className={`rounded-lg border px-3 py-2 text-xs font-bold ${resourceDraft.sourceType === sourceType ? "border-[#b8b8f2] bg-[#f0efff] text-[#5556d8]" : "border-[#e3e3ed] bg-white text-[#777a91]"}`} key={sourceType} onClick={() => { setResourceDraft((current) => ({ ...current, sourceType, externalUrl: sourceType === "file" ? "" : current.externalUrl })); setResourceFile(null); }} type="button">{sourceType === "file" ? "Arquivo" : "Link"}</button>)}
                     </div>
                   </div>
-                  {resourceDraft.sourceType === "file" ? (
-                    <label className="md:col-span-2"><span className="mb-1.5 block text-xs font-bold text-[#55576d]">Arquivo (até 25 MB, qualquer formato)</span><input id="hr-resource-file" required={!editingResourceId || Boolean(libraryResources.find((resource) => resource.id === editingResourceId)?.external_url)} type="file" className="w-full rounded-lg border border-[#e3e3ed] bg-white px-3 py-2 text-sm" onChange={(event) => setResourceFile(event.target.files?.[0] ?? null)} />{editingResourceId && !libraryResources.find((resource) => resource.id === editingResourceId)?.external_url && <small className="mt-1 block text-[11px] text-[#85879a]">Deixe vazio para manter o arquivo atual.</small>}</label>
-                  ) : (
-                    <label className="md:col-span-2"><span className="mb-1.5 block text-xs font-bold text-[#55576d]">Endereço do link</span><input required maxLength={1000} type="url" className="w-full rounded-lg border border-[#e3e3ed] bg-white px-3 py-2.5 text-sm" value={resourceDraft.externalUrl} onChange={(event) => setResourceDraft((current) => ({ ...current, externalUrl: event.target.value }))} placeholder="https://..." /></label>
-                  )}
+                  <div className="md:col-span-2 grid items-start gap-4 md:grid-cols-[minmax(0,0.75fr)_minmax(0,1.25fr)]">
+                    <div className="min-w-0 space-y-3"><div><div className="mb-2 flex items-center gap-2"><span className="text-xs font-bold leading-5 text-[#55576d]">Visibilidade do arquivo</span><ResourceVisibilityHelp /></div><div className="inline-flex rounded-xl border border-[#e3e3ed] bg-white p-1" role="group" aria-label="Visibilidade do arquivo">{([ ["public", "Público"], ["private", "Privado"] ] as const).map(([scope, label]) => <button aria-pressed={resourceDraft.audienceScope === scope} className={`rounded-lg px-4 py-2 text-xs font-bold transition ${resourceDraft.audienceScope === scope ? "bg-[#f0efff] text-[#5556d8]" : "text-[#777a91]"}`} key={scope} onClick={() => setResourceAudienceScope(scope)} type="button">{label}</button>)}</div></div>
+                      {resourceDraft.sourceType === "file" ? <label className="block"><span className="mb-2 block text-xs font-bold leading-5 text-[#55576d]">Arquivo (até 25 MB, qualquer formato)</span><input id="hr-resource-file" required={!editingResourceId || Boolean(libraryResources.find((resource) => resource.id === editingResourceId)?.external_url)} type="file" className="w-full rounded-lg border border-[#e3e3ed] bg-white px-3 py-2 text-sm" onChange={(event) => setResourceFile(event.target.files?.[0] ?? null)} />{editingResourceId && !libraryResources.find((resource) => resource.id === editingResourceId)?.external_url && <small className="mt-1 block text-[11px] text-[#85879a]">Deixe vazio para manter o arquivo atual.</small>}</label> : <label className="block"><span className="mb-2 block text-xs font-bold leading-5 text-[#55576d]">Endereço do link</span><input required maxLength={1000} type="url" className="w-full rounded-lg border border-[#e3e3ed] bg-white px-3 py-2.5 text-sm" value={resourceDraft.externalUrl} onChange={(event) => setResourceDraft((current) => ({ ...current, externalUrl: event.target.value }))} placeholder="https://..." /></label>}
+                    </div>
+                    <div className="min-w-0">{resourceDraft.audienceScope === "private" && <TeamPeoplePicker title="Pessoas com acesso" people={accounts.filter((person) => person.isActive)} selectedIds={resourceDraft.audienceEmployeeIds.map(Number)} onToggle={toggleResourceAudience} />}</div>
+                  </div>
+                  <label className="md:col-span-2"><span className="mb-2 block text-xs font-bold leading-5 text-[#55576d]">Descrição</span><input maxLength={1200} className="w-full rounded-lg border border-[#e3e3ed] bg-white px-3 py-2.5 text-sm" value={resourceDraft.description} onChange={(event) => setResourceDraft((current) => ({ ...current, description: event.target.value }))} /></label>
                 </div>
-                <div className="mt-3 flex flex-wrap items-center justify-between gap-2"><p className="text-[11px] text-[#85879a]">{resourceDraft.sourceType === "file" ? "O arquivo ficará em pasta privada e poderá ser acessado pela biblioteca." : "O link ficará disponível na biblioteca para as pessoas autenticadas."}</p><button className="button-primary h-10 px-4 text-sm" disabled={uploadingResource || !selectedStage} type="submit">{uploadingResource ? "Salvando..." : editingResourceId ? "Salvar material" : "Cadastrar e adicionar à etapa"}</button></div>
-              </form>
-              {libraryResources.length ? <div className="mt-4 grid gap-2 sm:grid-cols-2">
-                {libraryResources.map((resource) => {
-                  const checked = planResources.some((item) => item.stageTemplateId === selectedStageId && item.resourceId === resource.id);
-                  return <div className={`flex items-start gap-3 rounded-xl border p-3 transition ${checked ? "border-[#b8b8f2] bg-[#f7f6ff]" : "border-[#ededf3] bg-white hover:bg-[#fafafe]"}`} key={resource.id}>
-                    <label className="flex min-w-0 flex-1 cursor-pointer items-start gap-3"><input className="mt-1 size-4 accent-[#5b5ce2]" type="checkbox" checked={checked} onChange={(event) => toggleResource(resource, event.target.checked)} /><span className="min-w-0"><strong className="block text-sm text-[#303249]">{resource.title}</strong><small className="mt-1 block truncate text-xs text-[#85879a]">{resource.category} · {resource.external_url ? "Link" : resource.format}</small></span></label>
-                    <button className="shrink-0 rounded-lg border border-[#e6e6ef] px-2.5 py-1.5 text-[11px] font-bold text-[#5b5cd5] hover:bg-white" onClick={() => editResource(resource)} type="button">Editar</button>
-                  </div>;
-                })}
-              </div> : <p className="mt-3 rounded-xl bg-[#fafafe] p-4 text-sm text-[#85879a]">Não há materiais publicados na biblioteca.</p>}
+                <div className="mt-3 flex flex-wrap items-center justify-between gap-2"><p className="text-[11px] text-[#85879a]">{resourceDraft.audienceScope === "private" ? `Acesso privado para ${resourceDraft.audienceEmployeeIds.length} ${resourceDraft.audienceEmployeeIds.length === 1 ? "pessoa" : "pessoas"}.` : "Acesso público para todas as pessoas."}</p><button className="button-primary h-10 px-4 text-sm" disabled={uploadingResource || !selectedStage} type="submit">{uploadingResource ? "Salvando..." : editingResourceId ? "Salvar material" : "Cadastrar e adicionar à etapa"}</button></div>
+              </form>}
             </div>
           </div>}
 
-          {selectedAccount && <form className="content-panel space-y-4" onSubmit={submitTask}>
+          {selectedAccount && planAction === "task" && <form className="content-panel space-y-4" onSubmit={submitTask} ref={planActionEditorRef}>
             <div><p className="eyebrow">{editingTaskId === null ? "Nova tarefa" : "Editar tarefa"}</p><h2 className="mt-1 text-lg font-extrabold">{editingTaskId === null ? "Monte como vai aparecer" : "Atualize a tarefa"}</h2><p className="mt-1 text-sm text-[#85879a]">A tarefa será adicionada à etapa “{selectedStage?.name ?? "selecionada"}”.</p></div>
-            <div className="grid gap-5 lg:grid-cols-[minmax(0,1fr)_minmax(260px,0.8fr)]">
-              <div className="space-y-3">
-                <label className="block"><span className="mb-1.5 block text-xs font-bold text-[#55576d]">O que a pessoa precisa fazer?</span><input required maxLength={180} className="w-full rounded-xl border border-[#e3e3ed] px-4 py-3 text-sm outline-none focus:border-[#7778e5]" value={draft.title} onChange={(event) => setDraft((current) => ({ ...current, title: event.target.value }))} placeholder="Ex.: Criar contas da empresa" /></label>
-                <label className="block"><span className="mb-1.5 block text-xs font-bold text-[#55576d]">Instruções</span><textarea maxLength={1000} className="min-h-24 w-full rounded-xl border border-[#e3e3ed] px-4 py-3 text-sm outline-none focus:border-[#7778e5]" value={draft.description} onChange={(event) => setDraft((current) => ({ ...current, description: event.target.value }))} placeholder="Explique os passos e como confirmar que terminou." /></label>
+            <div className="flex flex-col gap-4">
+              <div className="order-2 space-y-3">
+                <label className="block"><span className="mb-2 block text-xs font-bold leading-5 text-[#55576d]">O que a pessoa precisa fazer?</span><input required maxLength={180} className="w-full rounded-xl border border-[#e3e3ed] px-4 py-3 text-sm outline-none focus:border-[#7778e5]" value={draft.title} onChange={(event) => setDraft((current) => ({ ...current, title: event.target.value }))} placeholder="Ex.: Criar contas da empresa" /></label>
+                <label className="block"><span className="mb-2 block text-xs font-bold leading-5 text-[#55576d]">Instruções</span><textarea maxLength={1000} className="min-h-24 w-full rounded-xl border border-[#e3e3ed] px-4 py-3 text-sm outline-none focus:border-[#7778e5]" value={draft.description} onChange={(event) => setDraft((current) => ({ ...current, description: event.target.value }))} placeholder="Explique os passos e como confirmar que terminou." /></label>
                 <div className="grid gap-3 sm:grid-cols-2">
-                  <label><span className="mb-1.5 block text-xs font-bold text-[#55576d]">Tipo de atividade</span><select className="w-full rounded-lg border border-[#e3e3ed] bg-white px-3 py-2.5 text-sm" value={draft.taskType} onChange={(event) => setDraft((current) => ({ ...current, taskType: event.target.value as PlanTask["taskType"] }))}>{Object.entries(taskTypeLabels).map(([value, label]) => <option key={value} value={value}>{label}</option>)}</select></label>
-                  <label><span className="mb-1.5 block text-xs font-bold text-[#55576d]">Categoria da preparação</span><select className="w-full rounded-lg border border-[#e3e3ed] bg-white px-3 py-2.5 text-sm" value={draft.category} onChange={(event) => setDraft((current) => ({ ...current, category: event.target.value }))}>{preparationCategories.map((category) => <option key={category} value={category}>{category}</option>)}</select></label>
-                  <label><span className="mb-1.5 block text-xs font-bold text-[#55576d]">Área responsável</span><select className="w-full rounded-lg border border-[#e3e3ed] bg-white px-3 py-2.5 text-sm" value={draft.responsibleDepartmentId} onChange={(event) => setDraft((current) => ({ ...current, responsibleDepartmentId: event.target.value }))}><option value="">Usar a área da pessoa responsável</option>{departments.map((department) => <option key={department.id} value={department.id}>{department.name}</option>)}</select></label>
-                  <div className="relative"><label className="mb-1.5 block text-xs font-bold text-[#55576d]" htmlFor="task-responsible-search">Pessoa responsável</label><input id="task-responsible-search" className="w-full rounded-lg border border-[#e3e3ed] bg-white px-3 py-2.5 text-sm" placeholder="Buscar pelo nome" value={taskResponsibleSearch} onChange={(event) => { setTaskResponsibleSearch(event.target.value); setDraft((current) => ({ ...current, ownerEmployeeId: "" })); }} />
+                  <label><span className="mb-2 block text-xs font-bold leading-5 text-[#55576d]">Tipo de atividade</span><select className="w-full rounded-lg border border-[#e3e3ed] bg-white px-3 py-2.5 text-sm" value={draft.taskType} onChange={(event) => setDraft((current) => ({ ...current, taskType: event.target.value as PlanTask["taskType"] }))}>{taskTypesForStage(stages, draft.stageTemplateId).map(([value, label]) => <option key={value} value={value}>{label}</option>)}</select></label>
+                  <label><span className="mb-2 block text-xs font-bold leading-5 text-[#55576d]">Categoria</span><select className="w-full rounded-lg border border-[#e3e3ed] bg-white px-3 py-2.5 text-sm" value={draft.category} onChange={(event) => setDraft((current) => ({ ...current, category: event.target.value }))}>{taskCategoriesForStage(stages, draft.stageTemplateId, draft.category).map((category) => <option key={category} value={category}>{category}</option>)}</select></label>
+                  {isPreEntryStage(stages, draft.stageTemplateId) && <TaskDepartmentAccessPicker departments={departments} selectedIds={draft.responsibleDepartmentIds} onToggle={(id) => setDraft((current) => ({ ...current, responsibleDepartmentIds: current.responsibleDepartmentIds.includes(String(id)) ? current.responsibleDepartmentIds.filter((value) => value !== String(id)) : [...current.responsibleDepartmentIds, String(id)] }))} />}
+                  {draft.ownerKind === "person" ? <div className="relative" ref={taskResponsiblePickerRef}><label className="mb-2 block text-xs font-bold leading-5 text-[#55576d]" htmlFor="task-responsible-search">Pessoa responsável</label><input id="task-responsible-search" className="w-full rounded-lg border border-[#e3e3ed] bg-white px-3 py-2.5 text-sm" placeholder="Buscar pelo nome" value={taskResponsibleSearch} onChange={(event) => { setTaskResponsibleSearch(event.target.value); setDraft((current) => ({ ...current, ownerEmployeeId: "" })); }} />
                     {draft.ownerEmployeeId && (() => { const person = responsiblePeople.find(({ id }) => id === Number(draft.ownerEmployeeId)); return person ? <div className="mt-2 flex items-center justify-between gap-3 rounded-lg border border-[#c9c8ed] bg-[#f7f6ff] px-3 py-2"><div className="min-w-0"><strong className="block truncate text-xs text-[#303249]">{person.name}</strong><small className="block truncate text-[10px] text-[#777a91]">{person.jobTitle ?? "Cargo não informado"} · {person.department ?? "Sem área"}</small></div><button className="shrink-0 text-[10px] font-bold text-[#5556d8]" onClick={() => setDraft((current) => ({ ...current, ownerEmployeeId: "" }))} type="button">Trocar</button></div> : null; })()}
                     {!draft.ownerEmployeeId && taskResponsibleSearch.trim() && <div className="absolute inset-x-0 top-full z-10 mt-1 space-y-1 rounded-xl border border-[#e5e5ef] bg-white p-2 shadow-lg">{responsibleMatches(taskResponsibleSearch).length ? responsibleMatches(taskResponsibleSearch).map((person) => <button className="w-full rounded-lg border border-transparent px-3 py-2 text-left hover:border-[#e5e4fa] hover:bg-[#f8f7ff]" key={person.id} onClick={() => { setDraft((current) => ({ ...current, ownerEmployeeId: String(person.id), responsibleDepartmentId: current.responsibleDepartmentId || String(person.departmentId ?? "") })); setTaskResponsibleSearch(""); }} type="button"><strong className="block truncate text-xs text-[#303249]">{person.name}</strong><small className="mt-0.5 block truncate text-[10px] text-[#777a91]">{person.jobTitle ?? "Cargo não informado"} · {person.department ?? "Sem área"}</small></button>) : <p className="px-3 py-2 text-xs text-[#85879a]">Nenhuma pessoa encontrada.</p>}</div>}
-                  </div>
-                  <label><span className="mb-1.5 block text-xs font-bold text-[#55576d]">Prazo relativo à entrada (dias)</span><input min={-32768} max={32767} type="number" className="w-full rounded-lg border border-[#e3e3ed] px-3 py-2.5 text-sm" value={draft.dueOffsetDays} onChange={(event) => setDraft((current) => ({ ...current, dueOffsetDays: event.target.value }))} /><small className="mt-1 block text-[10px] text-[#85879a]">Valor negativo: prazo antes da entrada.</small></label>
+                  </div> : <SuggestedOwnerPicker departments={departments} teams={teams} kind={draft.ownerKind} groupId={draft.ownerGroupId} onSelect={(kind, id) => setDraft((current) => ({ ...current, ownerKind: kind, ownerGroupId: id }))} />}
+                  <label><span className="mb-2 block text-xs font-bold leading-5 text-[#55576d]">Prazo relativo à entrada (dias)</span><input min={-32768} max={32767} type="number" className="w-full rounded-lg border border-[#e3e3ed] px-3 py-2.5 text-sm" value={draft.dueOffsetDays} onChange={(event) => setDraft((current) => ({ ...current, dueOffsetDays: event.target.value }))} /><small className="mt-1 block text-[10px] text-[#85879a]">Valor negativo: prazo antes da entrada.</small></label>
                   <label className="flex items-center gap-2 text-sm font-semibold text-[#55576d]"><input className="size-4 accent-[#5b5ce2]" type="checkbox" checked={draft.required} onChange={(event) => setDraft((current) => ({ ...current, required: event.target.checked }))} /><span>Obrigatória <small className="block text-xs font-normal text-[#85879a]">Desmarque se for opcional.</small></span></label>
                 </div>
               </div>
-              <aside className="h-fit rounded-2xl border border-[#e8e8f0] bg-[#fafafe] p-4">
+              <aside className="order-1 h-fit rounded-2xl border border-[#e8e8f0] bg-[#fafafe] p-4">
                 <p className="eyebrow">Prévia da jornada</p>
                 <article className="mt-3 rounded-xl border border-[#ededf3] bg-white p-4">
                   <div className="flex items-start gap-3"><span className="grid size-9 shrink-0 place-items-center rounded-xl bg-[#f1f0ff] text-[#5b5ce2]"><Icon name={draft.taskType === "training" ? "book" : draft.taskType === "checkin" ? "calendar" : "check"} size={17} /></span><div className="min-w-0 flex-1"><div className="flex flex-wrap items-center gap-2"><h3 className="font-extrabold text-[#303249]">{draft.title || "Título da tarefa"}</h3><span className="rounded-full bg-[#f5f5f9] px-2 py-1 text-[10px] font-bold text-[#777a91]">{taskTypeLabels[draft.taskType]}</span></div><p className="mt-2 text-sm leading-5 text-[#777a91]">{draft.description || "As instruções para a pessoa aparecerão aqui."}</p></div></div>
-                  <div className="mt-4 flex flex-wrap items-center justify-between gap-2 border-t border-[#eeeeF4] pt-3"><span className="text-xs text-[#777a91]">Pessoa responsável: <strong className="text-[#45475d]">{accounts.find(({ id }) => id === Number(draft.ownerEmployeeId))?.name ?? "Selecione uma pessoa"}</strong></span><span className={`rounded-full px-2 py-1 text-[10px] font-bold ${draft.required ? "bg-[#fff1dc] text-[#a9681c]" : "bg-[#f1f1f5] text-[#777a91]"}`}>{draft.required ? "Obrigatória" : "Opcional"}</span></div>
+                  <div className="mt-4 flex flex-wrap items-center justify-between gap-2 border-t border-[#eeeeF4] pt-3"><span className="text-xs text-[#777a91]">{isPreEntryStage(stages, draft.stageTemplateId) ? "Sugestão" : "Pessoa responsável"}: <strong className="text-[#45475d]">{draft.ownerKind === "person" ? accounts.find(({ id }) => id === Number(draft.ownerEmployeeId))?.name ?? "Selecione uma pessoa" : (draft.ownerKind === "team" ? teams : departments).find(({ id }) => id === Number(draft.ownerGroupId))?.name ?? "Sem sugestão"}</strong></span><span className={`rounded-full px-2 py-1 text-[10px] font-bold ${draft.required ? "bg-[#fff1dc] text-[#a9681c]" : "bg-[#f1f1f5] text-[#777a91]"}`}>{draft.required ? "Obrigatória" : "Opcional"}</span></div>
                 </article>
                 <p className="mt-3 text-[11px] leading-5 text-[#85879a]">Prazo: {formatDueOffset(Number(draft.dueOffsetDays) || 0)}</p>
               </aside>
@@ -1097,6 +1290,16 @@ function HrPlansView({ section }: { section: "people" | "plans" }) {
       {section === "plans" && selectedAccountId && <button aria-label="Salvar jornada no banco de dados" className="button-primary fixed bottom-6 right-6 z-40 h-14 rounded-full px-6 shadow-xl transition hover:-translate-y-0.5 hover:shadow-2xl sm:bottom-8 sm:right-8" disabled={saving || loadingPlan} onClick={savePlan} type="button"><Icon name="check" size={18} /> {saving ? "Salvando..." : "Salvar jornada"}</button>}
     </section>
   );
+}
+
+function ResourceVisibilityHelp() {
+  return <details className="group relative">
+    <summary aria-label="Explicação sobre a visibilidade do arquivo" className="grid size-[18px] cursor-pointer list-none place-items-center rounded-full border border-[#a4a5bc] text-[11px] font-extrabold leading-none text-[#77798e] hover:border-[#5b5ce2] hover:text-[#5556d8] [&::-webkit-details-marker]:hidden">?</summary>
+    <div className="absolute left-0 top-full z-30 mt-2 w-64 rounded-xl border border-[#e5e5ef] bg-white p-3 text-xs leading-5 text-[#686a80] shadow-xl">
+      <p><strong className="text-[#303249]">Público:</strong> todas as pessoas da empresa podem encontrar e abrir o material.</p>
+      <p className="mt-2"><strong className="text-[#303249]">Privado:</strong> só as pessoas escolhidas em “Pessoas com acesso” podem encontrar e abrir o material.</p>
+    </div>
+  </details>;
 }
 
 function TeamParentPicker({ teams, value, onChange, excludedIds = new Set<number>() }: { teams: { team: Team; depth: number }[]; value: string; onChange: (value: string) => void; excludedIds?: Set<number> }) {
@@ -1114,7 +1317,7 @@ function TeamParentPicker({ teams, value, onChange, excludedIds = new Set<number
   }
 
   return <div>
-    <label className="mb-1.5 block text-xs font-bold text-[#55576d]">A quem responde</label>
+    <label className="mb-2 block text-xs font-bold leading-5 text-[#55576d]">A quem responde</label>
     <details className="group relative" ref={detailsRef}>
       <summary className="flex min-h-11 cursor-pointer list-none items-center justify-between gap-3 rounded-xl border border-[#e3e3ed] bg-white px-3 py-3 text-sm font-normal text-[#45475d] outline-none focus-visible:border-[#7778e5] [&::-webkit-details-marker]:hidden">
         <span className="truncate">{selectedTeam?.name ?? "Equipe sem supervisor"}</span>
@@ -1137,6 +1340,23 @@ function TeamParentPicker({ teams, value, onChange, excludedIds = new Set<number
 
 function TeamPeoplePicker({ title, people, selectedIds, onToggle }: { title: string; people: Account[]; selectedIds: number[]; onToggle: (id: number) => void }) {
   const [search, setSearch] = useState("");
+  const pickerRef = useRef<HTMLElement>(null);
+  useEffect(() => {
+    function handlePointerDown(event: PointerEvent) {
+      if (event.target instanceof Node && !pickerRef.current?.contains(event.target)) setSearch("");
+    }
+
+    function handleKeyDown(event: KeyboardEvent) {
+      if (event.key === "Escape") setSearch("");
+    }
+
+    document.addEventListener("pointerdown", handlePointerDown);
+    document.addEventListener("keydown", handleKeyDown);
+    return () => {
+      document.removeEventListener("pointerdown", handlePointerDown);
+      document.removeEventListener("keydown", handleKeyDown);
+    };
+  }, []);
   const normalizedSearch = search.trim().normalize("NFD").replace(/[\u0300-\u036f]/g, "").toLocaleLowerCase("pt-BR");
   const matches = normalizedSearch.length >= 2
     ? people.filter((person) => `${person.name} ${person.email} ${person.jobTitle ?? ""} ${person.departments.join(" ")}`
@@ -1144,7 +1364,7 @@ function TeamPeoplePicker({ title, people, selectedIds, onToggle }: { title: str
     : [];
   const selectedPeople = people.filter((person) => selectedIds.includes(person.id));
 
-  return <section className="rounded-xl border border-[#e3e3ed] bg-white p-3">
+  return <section className="rounded-xl border border-[#e3e3ed] bg-white p-3" ref={pickerRef}>
     <div className="text-sm font-bold text-[#45475d]">{title}<span className="ml-2 rounded-full bg-[#f0efff] px-2 py-0.5 text-[10px] font-extrabold text-[#5556d8]">{selectedIds.length} selecionadas</span></div>
     <label className="mt-3 block"><span className="sr-only">Buscar pessoa por nome, e-mail, cargo ou área</span><span className="relative block"><span className="absolute left-3 top-1/2 -translate-y-1/2 text-[#9698aa]"><Icon name="search" size={16} /></span><input className="w-full rounded-lg border border-[#e3e3ed] bg-white py-2 pl-9 pr-3 text-xs outline-none focus:border-[#b8b8ec]" type="search" value={search} onChange={(event) => setSearch(event.target.value)} placeholder="Buscar nome, e-mail, cargo ou área..." /></span></label>
     <div className="mt-3 space-y-3">
@@ -1160,6 +1380,81 @@ function TeamPeoplePicker({ title, people, selectedIds, onToggle }: { title: str
       </div>
     </div>
   </section>;
+}
+
+function TaskDepartmentAccessPicker({ departments, selectedIds, onToggle }: { departments: Department[]; selectedIds: string[]; onToggle: (id: number) => void }) {
+  const selectedNames = departments.filter((department) => selectedIds.includes(String(department.id))).map((department) => department.name);
+  return <div>
+    <label className="mb-2 block text-xs font-bold leading-5 text-[#55576d]">Áreas com permissão para assumir</label>
+    <details className="group relative">
+      <summary className="flex min-h-11 cursor-pointer list-none items-center justify-between gap-3 rounded-xl border border-[#e3e3ed] bg-white px-3 py-2.5 text-sm text-[#45475d] [&::-webkit-details-marker]:hidden">
+        <span className="truncate">{selectedNames.length ? selectedNames.join(", ") : "Selecione uma ou mais áreas"}</span>
+        <span className="shrink-0 rotate-90 transition-transform group-open:-rotate-90"><Icon name="chevron" size={15} /></span>
+      </summary>
+      <div className="absolute inset-x-0 top-full z-30 mt-2 max-h-56 overflow-y-auto rounded-xl border border-[#e3e3ed] bg-white p-2 shadow-xl">
+        {departments.map((department) => <label className="flex cursor-pointer items-center gap-2 rounded-lg px-2 py-2 text-sm text-[#45475d] hover:bg-[#f7f7fc]" key={department.id}>
+          <input className="size-4 accent-[#5b5ce2]" type="checkbox" checked={selectedIds.includes(String(department.id))} onChange={() => onToggle(department.id)} />
+          {department.name}
+        </label>)}
+        {!departments.length && <p className="px-2 py-3 text-xs text-[#85879a]">Cadastre uma área para permitir que alguém assuma a tarefa.</p>}
+      </div>
+    </details>
+    <p className="mt-1 text-[10px] text-[#85879a]">Qualquer pessoa com acesso a uma destas áreas poderá assumir.</p>
+  </div>;
+}
+
+function SuggestedOwnerPicker({ departments, teams, kind, groupId, onSelect }: {
+  departments: Department[];
+  teams: Team[];
+  kind: TaskDraft["ownerKind"];
+  groupId: string;
+  onSelect: (kind: "team" | "department", id: string) => void;
+}) {
+  const [query, setQuery] = useState("");
+  const pickerRef = useRef<HTMLDivElement>(null);
+  const selectedName = kind === "team"
+    ? teams.find((team) => String(team.id) === groupId)?.name
+    : departments.find((department) => String(department.id) === groupId)?.name;
+  const normalizedQuery = query.trim().normalize("NFD").replace(/[\u0300-\u036f]/g, "").toLocaleLowerCase("pt-BR");
+  const matchingTeams = normalizedQuery ? teams.filter((team) => team.name.normalize("NFD").replace(/[\u0300-\u036f]/g, "").toLocaleLowerCase("pt-BR").includes(normalizedQuery)) : [];
+  const matchingDepartments = normalizedQuery ? departments.filter((department) => department.name.normalize("NFD").replace(/[\u0300-\u036f]/g, "").toLocaleLowerCase("pt-BR").includes(normalizedQuery)) : [];
+
+  useEffect(() => {
+    function handlePointerDown(event: PointerEvent) {
+      if (event.target instanceof Node && !pickerRef.current?.contains(event.target)) setQuery("");
+    }
+    function handleKeyDown(event: KeyboardEvent) {
+      if (event.key === "Escape") setQuery("");
+    }
+    document.addEventListener("pointerdown", handlePointerDown);
+    document.addEventListener("keydown", handleKeyDown);
+    return () => {
+      document.removeEventListener("pointerdown", handlePointerDown);
+      document.removeEventListener("keydown", handleKeyDown);
+    };
+  }, []);
+
+  function select(kindValue: "team" | "department", id: number) {
+    onSelect(kindValue, String(id));
+    setQuery("");
+  }
+
+  return <div className="relative" ref={pickerRef}>
+    <label className="mb-2 block text-xs font-bold leading-5 text-[#55576d]">Departamento/equipe sugerida <span className="font-normal text-[#85879a]">(opcional)</span></label>
+    {selectedName && <div className="mb-2 flex items-center justify-between gap-2 rounded-lg bg-[#f7f6ff] px-3 py-2 text-xs text-[#45475d]">
+      <span className="min-w-0 truncate"><strong>{kind === "team" ? "Equipe" : "Departamento"}:</strong> {selectedName}</span>
+      <button className="shrink-0 font-bold text-[#777a91] hover:text-[#5556d8]" onClick={() => onSelect(kind === "team" ? "team" : "department", "")} type="button">Remover</button>
+    </div>}
+    <div className="relative">
+      <span className="absolute left-3 top-1/2 -translate-y-1/2 text-[#9698aa]"><Icon name="search" size={15} /></span>
+      <input aria-label="Buscar departamento ou equipe sugerida" className="w-full rounded-lg border border-[#e3e3ed] bg-white py-2.5 pl-9 pr-3 text-sm outline-none focus:border-[#b8b8ec]" placeholder="Buscar departamento ou equipe..." value={query} onChange={(event) => setQuery(event.target.value)} />
+    </div>
+    {normalizedQuery && <div className="absolute inset-x-0 top-full z-30 mt-1 max-h-56 overflow-y-auto rounded-xl border border-[#e5e5ef] bg-white p-2 shadow-xl">
+      {matchingTeams.map((team) => <button className="flex w-full items-center justify-between gap-3 rounded-lg px-3 py-2 text-left hover:bg-[#f7f7fc]" key={`team-${team.id}`} onClick={() => select("team", team.id)} type="button"><span className="truncate text-xs font-semibold text-[#303249]">{team.name}</span><small className="shrink-0 text-[10px] text-[#85879a]">Equipe</small></button>)}
+      {matchingDepartments.map((department) => <button className="flex w-full items-center justify-between gap-3 rounded-lg px-3 py-2 text-left hover:bg-[#f7f7fc]" key={`department-${department.id}`} onClick={() => select("department", department.id)} type="button"><span className="truncate text-xs font-semibold text-[#303249]">{department.name}</span><small className="shrink-0 text-[10px] text-[#85879a]">Departamento</small></button>)}
+      {!matchingTeams.length && !matchingDepartments.length && <p className="px-3 py-2 text-xs text-[#85879a]">Nenhum departamento ou equipe encontrado.</p>}
+    </div>}
+  </div>;
 }
 
 export default HrPlansView;

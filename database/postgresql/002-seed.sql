@@ -64,9 +64,9 @@ SELECT stage.Stage_Template_Id, source.Title, source.Description, source.Categor
   department.Department_Id, source.Owner_Role, source.Due_Offset_Days, source.Display_Order
 FROM (VALUES
   ('pre-entry', 'Notebook corporativo', 'Equipamento preparado para o primeiro dia.', 'Equipamento', 'preparation', 'Tecnologia', 'Tecnologia', 0, 1),
-  ('pre-entry', 'Conta Google Workspace', 'E-mail e calendário corporativo.', 'Conta', 'preparation', 'Tecnologia', 'Tecnologia', 0, 2),
-  ('pre-entry', 'Conta Slack', 'Conta criada com o e-mail corporativo.', 'Conta', 'preparation', 'Tecnologia', 'Tecnologia', 0, 3),
-  ('pre-entry', 'Acesso Slack', 'Entrada nos canais internos.', 'Acesso', 'preparation', 'Tecnologia', 'Tecnologia', 2, 4),
+  ('pre-entry', 'Conta Google Workspace', 'E-mail e calendário corporativo.', 'TI', 'preparation', 'Tecnologia', 'Tecnologia', 0, 2),
+  ('pre-entry', 'Conta Slack', 'Conta criada com o e-mail corporativo.', 'TI', 'preparation', 'Tecnologia', 'Tecnologia', 0, 3),
+  ('pre-entry', 'Acesso Slack', 'Entrada nos canais internos.', 'TI', 'preparation', 'Tecnologia', 'Tecnologia', 2, 4),
   ('first-steps', 'Conhecer equipe e áreas', 'Explore o organograma, os papéis e os contatos da empresa.', 'Equipe', 'task', 'Liderança', 'Liderança direta', 1, 1),
   ('first-steps', 'Conversar com sua pessoa mentora', 'Conheça sua referência para dúvidas sobre a rotina e a empresa.', 'Mentoria', 'task', 'Liderança', 'Mentoria', 2, 2),
   ('first-steps', 'Acessar conteúdos essenciais', 'Consulte benefícios, políticas e orientações da sua etapa.', 'Conteúdo', 'task', 'Pessoas & Cultura', 'Pessoas & Cultura', 3, 3),

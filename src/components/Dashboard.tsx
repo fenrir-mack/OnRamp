@@ -162,6 +162,7 @@ function Dashboard({ employee, onLogout }: { employee: AuthenticatedEmployee; on
         format: string;
         category: string;
         owner_department: string | null;
+        is_public: boolean;
         external_url: string | null;
         download_url: string | null;
         original_file_name: string | null;
@@ -186,6 +187,7 @@ function Dashboard({ employee, onLogout }: { employee: AuthenticatedEmployee; on
             downloadUrl: row.external_url ?? row.download_url,
             isExternalLink: Boolean(row.external_url),
             fileName: row.original_file_name,
+            audience: row.is_public ? "shared" : "personal",
           };
         }));
         setResourceStatus("ready");
@@ -238,7 +240,7 @@ function Dashboard({ employee, onLogout }: { employee: AuthenticatedEmployee; on
       .catch(() => setSearchPeopleRequested(false));
   }
   const navItems: { label: string; icon: IconName }[] = employee.isHrAdmin
-    ? [{ label: "Pessoas da empresa", icon: "people" }, { label: "Jornadas", icon: "calendar" }, { label: "Novas admissões", icon: "tools" }, { label: "Acompanhamento", icon: "chat" }, { label: "Tarefas atrasadas", icon: "clock" }, { label: "Mensagens de suporte", icon: "chat" }]
+    ? [{ label: "Pessoas da empresa", icon: "people" }, { label: "Jornadas", icon: "calendar" }, { label: "Arquivos", icon: "book" }, { label: "Novas admissões", icon: "tools" }, { label: "Acompanhamento", icon: "chat" }, { label: "Tarefas atrasadas", icon: "clock" }, { label: "Mensagens de suporte", icon: "chat" }]
     : [
         { label: "Início", icon: "home" },
         { label: "Minha jornada", icon: "calendar" },
@@ -322,7 +324,7 @@ function Dashboard({ employee, onLogout }: { employee: AuthenticatedEmployee; on
           ) : !employee.isHrAdmin && activeNav === "Pedir suporte" ? (
             <SupportRequestView onOpenChat={openSupportRequestChat} />
           ) : employee.isHrAdmin ? (
-            <HrPlansView section={activeNav === "Jornadas" ? "plans" : "people"} />
+            <HrPlansView section={activeNav === "Jornadas" ? "plans" : activeNav === "Arquivos" ? "files" : "people"} />
           ) : activeNav === "Pessoas & áreas" ? (
             <PeopleView resetVersion={peopleResetVersion} openEmployeeId={requestedEmployeeId} />
           ) : activeNav === "Conteúdos" ? (

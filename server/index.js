@@ -92,8 +92,7 @@ app.get("/api/me/plan", requireAuthenticated, async (request, response) => {
           plan_task.owner_employee_id AS "ownerEmployeeId", task_owner.full_name AS "ownerName",
           plan_task.responsible_department_id AS "responsibleDepartmentId",
           plan_task.due_offset_days AS "dueOffsetDays", plan_task.is_required AS required,
-          plan_task.shipping_carrier AS carrier, plan_task.shipping_tracking_code AS "trackingCode",
-          plan_task.shipping_tracking_url AS "trackingUrl",
+          CASE WHEN lower(plan_task.category) = 'equipamento' THEN plan_task.shipping_tracking_url END AS "trackingUrl",
           COALESCE(progress.is_completed, FALSE) AS completed,
           CASE WHEN progress.is_completed THEN 'ready' ELSE COALESCE(progress.status, 'not_started') END AS status,
           (COALESCE(onboarding.start_date, employee.created_at::date) + plan_task.due_offset_days) AS "dueDate",
@@ -137,6 +136,8 @@ app.get("/api/me/plan", requireAuthenticated, async (request, response) => {
         INNER JOIN public.stage_templates AS stage ON stage.stage_template_id = plan_resource.stage_template_id
         INNER JOIN public.resources AS resource ON resource.resource_id = plan_resource.resource_id
         WHERE plan_resource.employee_id = $1 AND resource.status = 'published'
+          AND (NOT EXISTS (SELECT 1 FROM public.resource_audiences AS audience WHERE audience.resource_id = resource.resource_id)
+            OR EXISTS (SELECT 1 FROM public.resource_audiences AS audience WHERE audience.resource_id = resource.resource_id AND audience.employee_id = $1))
         ORDER BY stage.display_order, plan_resource.display_order, resource.title;
       `, [employeeId]),
     ]);
@@ -981,6 +982,28 @@ function parseAccountId(value) {
   return Number.isSafeInteger(accountId) && accountId > 0 ? accountId : null;
 }
 
+function parseResourceAudienceIds(values) {
+  if (!Array.isArray(values)) return null;
+  const parsed = values.map(parseAccountId);
+  if (parsed.some((employeeId) => !employeeId)) return null;
+  return [...new Set(parsed)];
+}
+
+async function hasActiveResourceAudience(ids, executor = pool) {
+  if (!ids.length) return true;
+  const result = await executor.query("SELECT employee_id FROM public.employees WHERE is_active IS TRUE AND employee_id = ANY($1::int[])", [ids]);
+  return result.rowCount === ids.length;
+}
+
+async function replaceResourceAudience(executor, resourceId, employeeIds) {
+  await executor.query("DELETE FROM public.resource_audiences WHERE resource_id = $1", [resourceId]);
+  if (employeeIds.length) {
+    await executor.query(`INSERT INTO public.resource_audiences (resource_id, employee_id)
+      SELECT $1, audience.employee_id FROM unnest($2::int[]) AS audience(employee_id)
+      ON CONFLICT (resource_id, employee_id) DO NOTHING`, [resourceId, employeeIds]);
+  }
+}
+
 function isValidDateOnly(value) {
   if (typeof value !== "string" || !/^\d{4}-\d{2}-\d{2}$/.test(value)) return false;
   const date = new Date(`${value}T00:00:00Z`);
@@ -997,7 +1020,8 @@ async function canManagePreparationTask(employeeId, isHrAdmin, taskId, client = 
         WHERE stage.stage_template_id = task.stage_template_id AND stage.stage_code = 'pre-entry')
       AND ($3::boolean OR task.owner_employee_id = $2 OR EXISTS (
         SELECT 1 FROM public.employee_preparation_department_access AS access
-        WHERE access.employee_id = $2 AND access.department_id = task.responsible_department_id
+        WHERE access.employee_id = $2 AND access.department_id = ANY(CASE WHEN cardinality(task.responsible_department_ids) > 0
+          THEN task.responsible_department_ids ELSE ARRAY[task.responsible_department_id] END)
       ))
   `, [taskId, employeeId, isHrAdmin]);
   return result.rowCount > 0;
@@ -1033,19 +1057,19 @@ app.get("/api/preparation/tasks", requireAuthenticated, async (request, response
         department.name AS department, task.due_offset_days AS "dueOffsetDays",
         COALESCE(onboarding.start_date, employee.created_at::date) AS "startDate",
         COALESCE(onboarding.start_date, employee.created_at::date) + task.due_offset_days AS "dueDate",
-        COALESCE(progress.status, 'not_started') AS status, task.shipping_carrier AS carrier,
-        task.shipping_tracking_code AS "trackingCode", task.shipping_tracking_url AS "trackingUrl",
+        COALESCE(progress.status, 'not_started') AS status,
+        CASE WHEN lower(task.category) = 'equipamento' THEN task.shipping_tracking_url END AS "trackingUrl",
         (SELECT COUNT(*)::int FROM public.employee_plan_task_issues AS issue
           WHERE issue.employee_plan_task_id = task.employee_plan_task_id AND issue.status <> 'resolved') AS "openIssueCount",
         COALESCE((SELECT json_agg(json_build_object('id', issue.employee_plan_task_issue_id, 'description', issue.description,
           'status', issue.status, 'resolutionNote', issue.resolution_note, 'createdAt', issue.created_at) ORDER BY issue.created_at DESC)
           FROM public.employee_plan_task_issues AS issue WHERE issue.employee_plan_task_id = task.employee_plan_task_id), '[]'::json) AS issues,
         COALESCE((SELECT json_agg(json_build_object('id', entry.id, 'actorName', entry.actor_name,
-          'action', entry.action, 'newValue', entry.new_value, 'createdAt', entry.created_at) ORDER BY entry.created_at DESC)
+          'action', entry.action, 'previousValue', entry.previous_value, 'newValue', entry.new_value, 'comment', entry.comment, 'createdAt', entry.created_at) ORDER BY entry.created_at DESC)
           FROM (SELECT history.employee_plan_task_history_id AS id, actor.full_name AS actor_name,
-            history.action, history.new_value, history.created_at FROM public.employee_plan_task_history AS history
+            history.action, history.previous_value, history.new_value, history.comment, history.created_at FROM public.employee_plan_task_history AS history
             INNER JOIN public.employees AS actor ON actor.employee_id = history.actor_employee_id
-            WHERE history.employee_plan_task_id = task.employee_plan_task_id ORDER BY history.created_at DESC LIMIT 5) AS entry), '[]'::json) AS history
+            WHERE history.employee_plan_task_id = task.employee_plan_task_id ORDER BY history.created_at DESC) AS entry), '[]'::json) AS history
       FROM public.employee_plan_tasks AS task
       INNER JOIN public.employees AS employee ON employee.employee_id = task.employee_id
       LEFT JOIN public.employees AS owner ON owner.employee_id = task.owner_employee_id
@@ -1058,7 +1082,8 @@ app.get("/api/preparation/tasks", requireAuthenticated, async (request, response
       WHERE task.task_type = 'preparation' AND stage.stage_code = 'pre-entry' AND employee.is_active IS TRUE
         AND ($2::boolean OR task.owner_employee_id = $1 OR EXISTS (
           SELECT 1 FROM public.employee_preparation_department_access AS access
-          WHERE access.employee_id = $1 AND access.department_id = task.responsible_department_id
+          WHERE access.employee_id = $1 AND access.department_id = ANY(CASE WHEN cardinality(task.responsible_department_ids) > 0
+            THEN task.responsible_department_ids ELSE ARRAY[task.responsible_department_id] END)
         ))
       ORDER BY COALESCE(onboarding.start_date, employee.created_at::date), department.name, "dueDate", employee.full_name, task.display_order
     `, [employeeId, isHrAdmin]);
@@ -1072,8 +1097,9 @@ app.get("/api/preparation/tasks", requireAuthenticated, async (request, response
 app.patch("/api/preparation/tasks/:taskId/status", requireAuthenticated, async (request, response) => {
   const taskId = parseAccountId(request.params.taskId);
   const status = request.body?.status;
-  const statuses = new Set(["not_started", "in_progress", "waiting_third_party", "ready"]);
-  if (!taskId || !statuses.has(status)) return response.status(400).json({ error: "Selecione um estado de preparação válido." });
+  const comment = typeof request.body?.comment === "string" ? request.body.comment.trim() : "";
+  const statuses = new Set(["not_started", "in_progress", "waiting_third_party", "blocked", "ready", "cancelled", "not_applicable"]);
+  if (!taskId || !statuses.has(status) || comment.length > 2000) return response.status(400).json({ error: "Selecione um estado válido e escreva um comentário de até 2.000 caracteres." });
   const actorId = request.authenticatedEmployee.employee_id;
   const client = await pool.connect();
   try {
@@ -1092,10 +1118,11 @@ app.patch("/api/preparation/tasks/:taskId/status", requireAuthenticated, async (
         is_completed = EXCLUDED.is_completed, completed_at = EXCLUDED.completed_at,
         updated_by_employee_id = EXCLUDED.updated_by_employee_id, updated_at = CURRENT_TIMESTAMP`,
     [taskId, targetEmployeeId, status, status === "ready", actorId]);
-    await client.query(`INSERT INTO public.employee_plan_task_history (employee_plan_task_id, actor_employee_id, action, previous_value, new_value)
-      VALUES ($1, $2, 'status', $3, $4)`, [taskId, actorId, prior.rows[0]?.status ?? "not_started", status]);
+    const history = await client.query(`INSERT INTO public.employee_plan_task_history (employee_plan_task_id, actor_employee_id, action, previous_value, new_value, comment)
+      VALUES ($1, $2, 'status', $3, $4, NULLIF($5, ''))
+      RETURNING employee_plan_task_history_id AS id, action, previous_value AS "previousValue", new_value AS "newValue", comment, created_at AS "createdAt"`, [taskId, actorId, prior.rows[0]?.status ?? "not_started", status, comment]);
     await client.query("COMMIT");
-    return response.json({ id: taskId, status });
+    return response.json({ id: taskId, status, history: { ...history.rows[0], actorName: request.authenticatedEmployee.full_name } });
   } catch (error) {
     await client.query("ROLLBACK").catch(() => undefined);
     console.error("Could not update preparation status:", error.message);
@@ -1105,24 +1132,59 @@ app.patch("/api/preparation/tasks/:taskId/status", requireAuthenticated, async (
   }
 });
 
+app.post("/api/preparation/tasks/:taskId/claim", requireAuthenticated, async (request, response) => {
+  const taskId = parseAccountId(request.params.taskId);
+  if (!taskId) return response.status(400).json({ error: "Tarefa inválida." });
+  const actorId = request.authenticatedEmployee.employee_id;
+  const client = await pool.connect();
+  try {
+    await client.query("BEGIN");
+    const task = await client.query(`SELECT employee_plan_task_id, owner_employee_id FROM public.employee_plan_tasks
+      WHERE employee_plan_task_id = $1 AND task_type = 'preparation' FOR UPDATE`, [taskId]);
+    if (!task.rowCount || !(await canManagePreparationTask(actorId, request.authenticatedEmployee.is_hr_admin === true, taskId, client))) {
+      await client.query("ROLLBACK");
+      return response.status(404).json({ error: "Item de preparação não encontrado." });
+    }
+    if (task.rows[0].owner_employee_id) {
+      await client.query("ROLLBACK");
+      return response.status(409).json({ error: "Esta tarefa já tem uma pessoa responsável." });
+    }
+    const owner = await client.query(`UPDATE public.employee_plan_tasks SET owner_employee_id = $2, updated_at = CURRENT_TIMESTAMP
+      WHERE employee_plan_task_id = $1 AND owner_employee_id IS NULL
+      RETURNING owner_employee_id AS "ownerEmployeeId"`, [taskId, actorId]);
+    if (!owner.rowCount) {
+      await client.query("ROLLBACK");
+      return response.status(409).json({ error: "Esta tarefa já foi assumida por outra pessoa." });
+    }
+    const history = await client.query(`INSERT INTO public.employee_plan_task_history (employee_plan_task_id, actor_employee_id, action, previous_value, new_value)
+      VALUES ($1, $2, 'owner', NULL, $3)
+      RETURNING employee_plan_task_history_id AS id, action, previous_value AS "previousValue", new_value AS "newValue", comment, created_at AS "createdAt"`, [taskId, actorId, request.authenticatedEmployee.full_name]);
+    await client.query("COMMIT");
+    return response.json({ ...owner.rows[0], ownerName: request.authenticatedEmployee.full_name, history: { ...history.rows[0], actorName: request.authenticatedEmployee.full_name } });
+  } catch (error) {
+    await client.query("ROLLBACK").catch(() => undefined);
+    console.error("Could not claim preparation task:", error.message);
+    return response.status(500).json({ error: "Não foi possível assumir a tarefa." });
+  } finally {
+    client.release();
+  }
+});
+
 app.patch("/api/preparation/tasks/:taskId/shipment", requireAuthenticated, async (request, response) => {
   const taskId = parseAccountId(request.params.taskId);
-  const carrier = typeof request.body?.carrier === "string" ? request.body.carrier.trim() : "";
-  const trackingCode = typeof request.body?.trackingCode === "string" ? request.body.trackingCode.trim() : "";
   const trackingUrl = typeof request.body?.trackingUrl === "string" ? request.body.trackingUrl.trim() : "";
-  if (!taskId || carrier.length > 120 || trackingCode.length > 180 || trackingUrl.length > 1000) return response.status(400).json({ error: "Confira os dados de rastreio." });
+  if (!taskId || trackingUrl.length > 1000) return response.status(400).json({ error: "Confira o link de rastreio." });
   if (trackingUrl && !/^https?:\/\//i.test(trackingUrl)) return response.status(400).json({ error: "O link de rastreio deve começar com http:// ou https://." });
   const actorId = request.authenticatedEmployee.employee_id;
   try {
     if (!(await canManagePreparationTask(actorId, request.authenticatedEmployee.is_hr_admin === true, taskId))) return response.status(404).json({ error: "Item de preparação não encontrado." });
-    const result = await pool.query(`UPDATE public.employee_plan_tasks SET shipping_carrier = NULLIF($2, ''),
-        shipping_tracking_code = NULLIF($3, ''), shipping_tracking_url = NULLIF($4, ''), updated_at = CURRENT_TIMESTAMP
-      WHERE employee_plan_task_id = $1 AND task_type = 'preparation'
-      RETURNING employee_plan_task_id AS id`, [taskId, carrier, trackingCode, trackingUrl]);
+    const result = await pool.query(`UPDATE public.employee_plan_tasks SET shipping_tracking_url = NULLIF($2, ''), updated_at = CURRENT_TIMESTAMP
+      WHERE employee_plan_task_id = $1 AND task_type = 'preparation' AND lower(category) = 'equipamento'
+      RETURNING employee_plan_task_id AS id`, [taskId, trackingUrl]);
     if (!result.rowCount) return response.status(404).json({ error: "Item de preparação não encontrado." });
     await pool.query(`INSERT INTO public.employee_plan_task_history (employee_plan_task_id, actor_employee_id, action, new_value)
-      VALUES ($1, $2, 'shipment', $3)`, [taskId, actorId, JSON.stringify({ carrier, trackingCode, trackingUrl })]);
-    return response.json({ id: taskId, carrier, trackingCode, trackingUrl });
+      VALUES ($1, $2, 'shipment', $3)`, [taskId, actorId, trackingUrl]);
+    return response.json({ id: taskId, trackingUrl });
   } catch (error) {
     console.error("Could not save shipment tracking:", error.message);
     return response.status(500).json({ error: "Não foi possível salvar os dados de rastreio." });
@@ -1323,12 +1385,34 @@ function validatePlanTasks(tasks) {
     if (typeof task.description !== "string" || task.description.length > 1000) return "A descrição pode ter até 1.000 caracteres.";
     if (typeof task.category !== "string" || !task.category.trim() || task.category.trim().length > 80) return "Informe uma categoria com até 80 caracteres.";
     if (typeof task.ownerRole !== "string" || !task.ownerRole.trim() || task.ownerRole.trim().length > 120) return "Informe a pessoa responsável.";
-    if (!Number.isSafeInteger(Number(task.ownerEmployeeId)) || Number(task.ownerEmployeeId) <= 0) return "Selecione uma pessoa responsável para cada tarefa.";
+    if (task.ownerEmployeeId !== null && task.ownerEmployeeId !== undefined && task.ownerEmployeeId !== "" &&
+      (!Number.isSafeInteger(Number(task.ownerEmployeeId)) || Number(task.ownerEmployeeId) <= 0)) return "Selecione uma pessoa responsável válida.";
     if (task.responsibleDepartmentId !== undefined && task.responsibleDepartmentId !== null && task.responsibleDepartmentId !== "" &&
       (!Number.isSafeInteger(Number(task.responsibleDepartmentId)) || Number(task.responsibleDepartmentId) <= 0)) return "Selecione uma área responsável válida.";
+    if (task.responsibleDepartmentIds !== undefined && (!Array.isArray(task.responsibleDepartmentIds) || task.responsibleDepartmentIds.length > 100 ||
+      task.responsibleDepartmentIds.some((id) => !Number.isSafeInteger(Number(id)) || Number(id) <= 0))) return "Selecione áreas válidas para assumir a tarefa.";
     if (!validTypes.has(task.taskType)) return "O tipo de tarefa é inválido.";
     if (!Number.isSafeInteger(Number(task.dueOffsetDays)) || Number(task.dueOffsetDays) < -32768 || Number(task.dueOffsetDays) > 32767) return "O prazo deve ser um número de dias entre -32.768 e 32.767.";
     if (typeof task.required !== "boolean") return "Informe se a tarefa é obrigatória.";
+  }
+  return null;
+}
+
+function normalizeTaskTypesForStages(tasks, stages) {
+  const stageCodes = new Map(stages.map((stage) => [stage.stage_template_id, stage.stage_code]));
+  return tasks.map((task) => {
+    const isPreEntry = stageCodes.get(Number(task.stageTemplateId)) === "pre-entry";
+    return { ...task, taskType: isPreEntry ? "preparation" : task.taskType === "preparation" ? "task" : task.taskType };
+  });
+}
+
+function validateTaskAssignments(tasks, stages) {
+  const stageCodes = new Map(stages.map((stage) => [stage.stage_template_id, stage.stage_code]));
+  for (const task of tasks) {
+    const hasPerson = task.ownerEmployeeId !== null && task.ownerEmployeeId !== undefined && task.ownerEmployeeId !== "";
+    if (hasPerson && stageCodes.get(Number(task.stageTemplateId)) === "pre-entry") return "A tarefa de pré-entrada deve ter uma equipe ou departamento responsável para que alguém possa assumi-la.";
+    if (!hasPerson && stageCodes.get(Number(task.stageTemplateId)) !== "pre-entry") return "Selecione uma pessoa responsável para cada tarefa fora da pré-entrada.";
+    if (!hasPerson && !(task.responsibleDepartmentIds?.length || Number.isSafeInteger(Number(task.responsibleDepartmentId)) && Number(task.responsibleDepartmentId) > 0)) return "Selecione ao menos uma área com permissão para assumir cada tarefa de equipe ou departamento.";
   }
   return null;
 }
@@ -1344,6 +1428,7 @@ app.get("/api/hr/task-presets", requireHr, async (_request, response) => {
         task.task_type AS "taskType",
         task.owner_role AS "ownerRole", task.owner_employee_id AS "ownerEmployeeId",
         task.responsible_department_id AS "responsibleDepartmentId",
+        COALESCE(NULLIF(task.responsible_department_ids, '{}'), ARRAY[task.responsible_department_id]) AS "responsibleDepartmentIds",
         task_owner.full_name AS "ownerName", task.due_offset_days AS "dueOffsetDays",
         task.is_required AS required
       FROM public.hr_task_presets AS preset
@@ -1359,7 +1444,7 @@ app.get("/api/hr/task-presets", requireHr, async (_request, response) => {
         id: row.taskId, stageTemplateId: row.stageTemplateId, stageName: row.stageName,
         stageOrder: row.stageOrder, title: row.title, description: row.taskDescription,
         category: row.category, taskType: row.taskType, ownerRole: row.ownerRole,
-        ownerEmployeeId: row.ownerEmployeeId, ownerName: row.ownerName, responsibleDepartmentId: row.responsibleDepartmentId,
+        ownerEmployeeId: row.ownerEmployeeId, ownerName: row.ownerName, responsibleDepartmentId: row.responsibleDepartmentId, responsibleDepartmentIds: row.responsibleDepartmentIds?.filter(Boolean) ?? [],
         dueOffsetDays: row.dueOffsetDays, required: row.required,
       });
     }
@@ -1378,26 +1463,29 @@ app.post("/api/hr/task-presets", requireHr, async (request, response) => {
   if (!name || name.length > 120) return response.status(400).json({ error: "Informe o nome do pacote (até 120 caracteres)." });
   if (description.length > 500) return response.status(400).json({ error: "A descrição pode ter até 500 caracteres." });
   if (taskError || !tasks.length) return response.status(400).json({ error: taskError ?? "Adicione ao menos uma tarefa ao pacote." });
-  if (tasks.some((task) => !Number.isSafeInteger(Number(task.ownerEmployeeId)) || Number(task.ownerEmployeeId) <= 0)) {
-    return response.status(400).json({ error: "Selecione uma pessoa responsável para cada tarefa do pacote." });
-  }
 
   const client = await pool.connect();
   try {
     await client.query("BEGIN");
     const stageIds = [...new Set(tasks.map((task) => Number(task.stageTemplateId)))];
-    const validStages = await client.query("SELECT stage_template_id FROM public.stage_templates WHERE is_active IS TRUE AND stage_template_id = ANY($1::int[])", [stageIds]);
+    const validStages = await client.query("SELECT stage_template_id, stage_code FROM public.stage_templates WHERE is_active IS TRUE AND stage_template_id = ANY($1::int[])", [stageIds]);
     if (validStages.rowCount !== stageIds.length) {
       await client.query("ROLLBACK");
       return response.status(400).json({ error: "Um pacote contém uma etapa inexistente ou inativa." });
     }
-    const ownerIds = [...new Set(tasks.map((task) => Number(task.ownerEmployeeId)).filter((id) => Number.isSafeInteger(id) && id > 0))];
+    const tasksForStorage = normalizeTaskTypesForStages(tasks, validStages.rows);
+    const assignmentError = validateTaskAssignments(tasksForStorage, validStages.rows);
+    if (assignmentError) {
+      await client.query("ROLLBACK");
+      return response.status(400).json({ error: assignmentError });
+    }
+    const ownerIds = [...new Set(tasksForStorage.map((task) => Number(task.ownerEmployeeId)).filter((id) => Number.isSafeInteger(id) && id > 0))];
     const validOwners = await client.query("SELECT employee_id FROM public.employees WHERE is_active IS TRUE AND employee_id = ANY($1::int[])", [ownerIds]);
     if (validOwners.rowCount !== ownerIds.length) {
       await client.query("ROLLBACK");
       return response.status(400).json({ error: "Um pacote contém uma pessoa responsável inexistente ou inativa." });
     }
-    const departmentIds = [...new Set(tasks.map((task) => Number(task.responsibleDepartmentId)).filter((id) => Number.isSafeInteger(id) && id > 0))];
+    const departmentIds = [...new Set(tasksForStorage.flatMap((task) => [...(task.responsibleDepartmentIds ?? []), task.responsibleDepartmentId].map(Number)).filter((id) => Number.isSafeInteger(id) && id > 0))];
     const validDepartments = departmentIds.length ? await client.query("SELECT department_id FROM public.departments WHERE department_id = ANY($1::int[])", [departmentIds]) : { rowCount: 0 };
     if (validDepartments.rowCount !== departmentIds.length) {
       await client.query("ROLLBACK");
@@ -1410,23 +1498,23 @@ app.post("/api/hr/task-presets", requireHr, async (request, response) => {
     `, [name, description, request.authenticatedEmployee.employee_id]);
     const preset = presetResult.rows[0];
     const stageOrder = new Map();
-    for (const task of tasks) {
+    for (const task of tasksForStorage) {
       const stageId = Number(task.stageTemplateId);
       const displayOrder = stageOrder.get(stageId) ?? 0;
       stageOrder.set(stageId, displayOrder + 1);
       await client.query(`
         INSERT INTO public.hr_task_preset_tasks (
           hr_task_preset_id, stage_template_id, title, description, category, task_type, owner_employee_id,
-          owner_role, due_offset_days, is_required, display_order, responsible_department_id
+          owner_role, due_offset_days, is_required, display_order, responsible_department_id, responsible_department_ids
         ) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, COALESCE($12::int,
           (SELECT COALESCE((SELECT membership.department_id FROM public.employee_departments AS membership
             WHERE membership.employee_id = owner.employee_id AND membership.is_primary IS TRUE LIMIT 1), owner.department_id)
-            FROM public.employees AS owner WHERE owner.employee_id = $7)))
+            FROM public.employees AS owner WHERE owner.employee_id = $7)), $13::int[])
       `, [preset.id, stageId, task.title.trim(), task.description.trim(), task.category, task.taskType,
-        Number(task.ownerEmployeeId), task.ownerRole.trim(), Number(task.dueOffsetDays), task.required, displayOrder, task.responsibleDepartmentId || null]);
+        task.ownerEmployeeId == null || task.ownerEmployeeId === "" ? null : Number(task.ownerEmployeeId), task.ownerRole.trim(), Number(task.dueOffsetDays), task.required, displayOrder, task.responsibleDepartmentId || task.responsibleDepartmentIds?.[0] || null, task.responsibleDepartmentIds?.map(Number) ?? []]);
     }
     await client.query("COMMIT");
-    return response.status(201).json({ ...preset, tasks });
+    return response.status(201).json({ ...preset, tasks: tasksForStorage });
   } catch (error) {
     await client.query("ROLLBACK").catch(() => undefined);
     if (error.code === "23505") return response.status(409).json({ error: "Já existe um pacote com esse nome." });
@@ -1482,7 +1570,7 @@ app.get("/api/hr/accounts", requireHr, async (_request, response) => {
         employee.manager_employee_id AS "managerEmployeeId",
         manager.full_name AS "managerName", employee.is_active AS "isActive",
         onboarding.mentor_employee_id AS "mentorEmployeeId",
-        COALESCE(onboarding.start_date, employee.created_at::date) AS "startDate",
+        to_char(onboarding.start_date, 'YYYY-MM-DD') AS "startDate",
         mentor.full_name AS "mentorName",
         (SELECT COUNT(*)::int FROM public.employee_plan_tasks AS plan_task
           WHERE plan_task.employee_id = employee.employee_id) AS "planTaskCount"
@@ -1794,6 +1882,8 @@ app.post("/api/hr/resources/upload", requireHr, express.raw({ type: "application
   const title = decodeHeader("x-resource-title").trim();
   const description = decodeHeader("x-resource-description").trim();
   const categorySlug = decodeHeader("x-resource-category").trim();
+  const audienceRaw = decodeHeader("x-resource-employee-ids").trim();
+  const audienceEmployeeIds = parseResourceAudienceIds(audienceRaw ? audienceRaw.split(",") : []);
   const originalName = path.basename(decodeHeader("x-file-name").replaceAll("\\", "/"));
   const mimeType = (request.get("x-file-type") ?? "application/octet-stream").toLowerCase().split(";")[0].trim() || "application/octet-stream";
   const contents = request.body;
@@ -1802,6 +1892,8 @@ app.post("/api/hr/resources/upload", requireHr, express.raw({ type: "application
     return response.status(400).json({ error: "Confira o título, a categoria, a descrição e o nome do arquivo." });
   }
   if (!contents.length || contents.length > maximumResourceFileSize) return response.status(400).json({ error: "O arquivo deve ter até 25 MB e não pode estar vazio." });
+  if (!audienceEmployeeIds) return response.status(400).json({ error: "Confira as pessoas selecionadas para este arquivo." });
+  if (!(await hasActiveResourceAudience(audienceEmployeeIds))) return response.status(400).json({ error: "Uma ou mais pessoas selecionadas não estão ativas." });
   if (mimeType.length > 120) return response.status(400).json({ error: "O tipo do arquivo é inválido." });
   const client = await pool.connect();
   const storageKey = randomUUID();
@@ -1816,9 +1908,10 @@ app.post("/api/hr/resources/upload", requireHr, express.raw({ type: "application
     const resource = await client.query(`
       INSERT INTO public.resources (
         resource_category_id, title, description, format, mime_type, owner_employee_id, status
-      ) VALUES ($1, $2, NULLIF($3, ''), $4, $5, $6, 'draft')
+      ) VALUES ($1, $2, NULLIF($3, ''), $4, $5, NULL, 'draft')
       RETURNING resource_id AS id
-    `, [category.rows[0].id, title, description, extension, mimeType, request.authenticatedEmployee.employee_id]);
+    `, [category.rows[0].id, title, description, extension, mimeType]);
+    await replaceResourceAudience(client, resource.rows[0].id, audienceEmployeeIds);
     await storeFile(storageKey, contents, mimeType);
     fileStored = true;
     await client.query(`
@@ -1849,27 +1942,41 @@ app.post("/api/hr/resources/link", requireHr, async (request, response) => {
   const description = typeof request.body?.description === "string" ? request.body.description.trim() : "";
   const categorySlug = typeof request.body?.categorySlug === "string" ? request.body.categorySlug.trim() : "";
   const externalUrl = typeof request.body?.externalUrl === "string" ? request.body.externalUrl.trim() : "";
+  const audienceValue = request.body?.audienceEmployeeIds ?? (request.body?.audienceEmployeeId ? [request.body.audienceEmployeeId] : []);
+  const audienceEmployeeIds = parseResourceAudienceIds(audienceValue);
+  if (!audienceEmployeeIds) return response.status(400).json({ error: "Confira as pessoas selecionadas para este arquivo." });
+  if (!(await hasActiveResourceAudience(audienceEmployeeIds))) return response.status(400).json({ error: "Uma ou mais pessoas selecionadas não estão ativas." });
   let parsedUrl;
   try { parsedUrl = new URL(externalUrl); } catch { return response.status(400).json({ error: "Informe um link válido." }); }
   if (!title || title.length > 180 || description.length > 1200 || !categorySlug || externalUrl.length > 1000 || !["http:", "https:"].includes(parsedUrl.protocol)) {
     return response.status(400).json({ error: "Confira o título, a descrição, a categoria e o link do material." });
   }
+  const client = await pool.connect();
   try {
-    const result = await pool.query(`
+    await client.query("BEGIN");
+    const result = await client.query(`
       INSERT INTO public.resources (
         resource_category_id, title, description, format, mime_type, owner_employee_id,
         external_url, status
       )
-      SELECT category.resource_category_id, $2, NULLIF($3, ''), 'LINK', 'text/uri-list', $4, $5, 'published'
+      SELECT category.resource_category_id, $2, NULLIF($3, ''), 'LINK', 'text/uri-list', NULL, $4, 'published'
       FROM public.resource_categories AS category
       WHERE category.slug = $1
       RETURNING resource_id AS id
-    `, [categorySlug, title, description, request.authenticatedEmployee.employee_id, externalUrl]);
-    if (!result.rowCount) return response.status(400).json({ error: "A categoria selecionada não existe." });
+    `, [categorySlug, title, description, externalUrl]);
+    if (!result.rowCount) {
+      await client.query("ROLLBACK");
+      return response.status(400).json({ error: "A categoria selecionada não existe." });
+    }
+    await replaceResourceAudience(client, result.rows[0].id, audienceEmployeeIds);
+    await client.query("COMMIT");
     return response.status(201).json({ id: result.rows[0].id, title, description: description || null, format: "LINK", external_url: externalUrl });
   } catch (error) {
+    await client.query("ROLLBACK").catch(() => undefined);
     console.error("Could not store HR resource link:", error.message);
     return response.status(500).json({ error: "Não foi possível salvar o link do material." });
+  } finally {
+    client.release();
   }
 });
 
@@ -1880,6 +1987,10 @@ app.patch("/api/hr/resources/:resourceId", requireHr, async (request, response) 
   const categorySlug = typeof request.body?.categorySlug === "string" ? request.body.categorySlug.trim() : "";
   const sourceType = request.body?.sourceType;
   const externalUrl = typeof request.body?.externalUrl === "string" ? request.body.externalUrl.trim() : "";
+  const audienceValue = request.body?.audienceEmployeeIds ?? (request.body?.audienceEmployeeId ? [request.body.audienceEmployeeId] : []);
+  const audienceEmployeeIds = parseResourceAudienceIds(audienceValue);
+  if (!audienceEmployeeIds) return response.status(400).json({ error: "Confira as pessoas selecionadas para este arquivo." });
+  if (!(await hasActiveResourceAudience(audienceEmployeeIds))) return response.status(400).json({ error: "Uma ou mais pessoas selecionadas não estão ativas." });
   if (!resourceId) return response.status(400).json({ error: "Material inválido." });
   if (!title || title.length > 180 || description.length > 1200 || !categorySlug || !["file", "link"].includes(sourceType)) {
     return response.status(400).json({ error: "Confira o título, a descrição, a categoria e o tipo do material." });
@@ -1916,10 +2027,11 @@ app.patch("/api/hr/resources/:resourceId", requireHr, async (request, response) 
         mime_type = CASE WHEN $5 = 'link' THEN 'text/uri-list' ELSE mime_type END,
         external_url = CASE WHEN $5 = 'link' THEN $6 ELSE external_url END,
         blob_name = CASE WHEN $5 = 'link' THEN NULL ELSE blob_name END,
-        owner_employee_id = COALESCE(owner_employee_id, $7),
+        owner_employee_id = NULL,
         updated_at = CURRENT_TIMESTAMP
       WHERE resource_id = $1
-    `, [resourceId, category.rows[0].resource_category_id, title, description, sourceType, sourceType === "link" ? externalUrl : null, request.authenticatedEmployee.employee_id]);
+    `, [resourceId, category.rows[0].resource_category_id, title, description, sourceType, sourceType === "link" ? externalUrl : null]);
+    await replaceResourceAudience(client, resourceId, audienceEmployeeIds);
     if (sourceType === "link") await client.query("DELETE FROM public.resource_files WHERE resource_id = $1", [resourceId]);
     await client.query("COMMIT");
     transactionStarted = false;
@@ -1942,6 +2054,8 @@ app.put("/api/hr/resources/:resourceId/file", requireHr, express.raw({ type: "ap
   const title = decodeHeader("x-resource-title").trim();
   const description = decodeHeader("x-resource-description").trim();
   const categorySlug = decodeHeader("x-resource-category").trim();
+  const audienceRaw = decodeHeader("x-resource-employee-ids").trim();
+  const audienceEmployeeIds = parseResourceAudienceIds(audienceRaw ? audienceRaw.split(",") : []);
   const originalName = path.basename(decodeHeader("x-file-name").replaceAll("\\", "/"));
   const mimeType = (request.get("x-file-type") ?? "application/octet-stream").toLowerCase().split(";")[0].trim() || "application/octet-stream";
   const contents = request.body;
@@ -1949,6 +2063,8 @@ app.put("/api/hr/resources/:resourceId/file", requireHr, express.raw({ type: "ap
     return response.status(400).json({ error: "Confira os dados do material e o arquivo selecionado." });
   }
   if (!contents.length || contents.length > maximumResourceFileSize) return response.status(400).json({ error: "O arquivo deve ter até 25 MB e não pode estar vazio." });
+  if (!audienceEmployeeIds) return response.status(400).json({ error: "Confira as pessoas selecionadas para este arquivo." });
+  if (!(await hasActiveResourceAudience(audienceEmployeeIds))) return response.status(400).json({ error: "Uma ou mais pessoas selecionadas não estão ativas." });
   const client = await pool.connect();
   let fileStored = false;
   let transactionStarted = false;
@@ -1975,10 +2091,11 @@ app.put("/api/hr/resources/:resourceId/file", requireHr, express.raw({ type: "ap
       UPDATE public.resources
       SET resource_category_id = $2, title = $3, description = NULLIF($4, ''),
         format = $5, mime_type = $6, external_url = NULL, blob_name = $7,
-        owner_employee_id = COALESCE(owner_employee_id, $8),
+        owner_employee_id = NULL,
         status = 'published', updated_at = CURRENT_TIMESTAMP
       WHERE resource_id = $1
-    `, [resourceId, category.rows[0].resource_category_id, title, description, extension, mimeType, `private:${storageKey}`, request.authenticatedEmployee.employee_id]);
+    `, [resourceId, category.rows[0].resource_category_id, title, description, extension, mimeType, `private:${storageKey}`]);
+    await replaceResourceAudience(client, resourceId, audienceEmployeeIds);
     await client.query("DELETE FROM public.resource_files WHERE resource_id = $1", [resourceId]);
     await client.query(`
       INSERT INTO public.resource_files (
@@ -2009,13 +2126,14 @@ app.post("/api/hr/accounts", requireHr, async (request, response) => {
   const departmentId = departmentIds?.[0] ?? null;
   const managerEmployeeId = request.body?.managerEmployeeId === "" || request.body?.managerEmployeeId == null ? null : Number(request.body.managerEmployeeId);
   const mentorEmployeeId = request.body?.mentorEmployeeId === "" || request.body?.mentorEmployeeId == null ? null : Number(request.body.mentorEmployeeId);
-  const startDate = request.body?.startDate;
+  const requestedStartDate = request.body?.startDate;
+  const startDate = typeof requestedStartDate === "string" && requestedStartDate.trim() ? requestedStartDate.trim() : null;
   const password = typeof request.body?.password === "string" ? request.body.password : "";
   if (!name || name.length > 160 || !email || email.length > 254 || !/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(email)) {
     return response.status(400).json({ error: "Informe nome e um e-mail válido." });
   }
   if (jobTitle.length > 120) return response.status(400).json({ error: "O cargo pode ter até 120 caracteres." });
-  if (!isValidDateOnly(startDate)) return response.status(400).json({ error: "Informe uma data de entrada válida." });
+  if (startDate && !isValidDateOnly(startDate)) return response.status(400).json({ error: "Informe uma data de entrada válida." });
   if (!password || password.length < 8 || password.length > 1024) {
     return response.status(400).json({ error: "A senha inicial deve ter entre 8 e 1.024 caracteres." });
   }
@@ -2053,10 +2171,12 @@ app.post("/api/hr/accounts", requireHr, async (request, response) => {
       `, [email, name, jobTitle, departmentId, managerEmployeeId, passwordHash]);
       await saveEmployeeOrganization(client, result.rows[0].id, departmentIds, teamIds);
       await saveEmployeePreparationAccess(client, result.rows[0].id, preparationDepartmentIds, request.authenticatedEmployee.employee_id);
-      await client.query(`
-        INSERT INTO public.onboardings (employee_id, mentor_employee_id, start_date, status)
-        VALUES ($1, $2, $3::date, 'active')
-      `, [result.rows[0].id, mentorEmployeeId, startDate]);
+      if (startDate || mentorEmployeeId !== null) {
+        await client.query(`
+          INSERT INTO public.onboardings (employee_id, mentor_employee_id, start_date, status)
+          VALUES ($1, $2, $3::date, 'active')
+        `, [result.rows[0].id, mentorEmployeeId, startDate]);
+      }
       await client.query("COMMIT");
       transactionStarted = false;
       return response.status(201).json({ ...result.rows[0], departmentIds, teamIds });
@@ -2086,13 +2206,14 @@ app.patch("/api/hr/accounts/:accountId", requireHr, async (request, response) =>
   const departmentId = departmentIds?.[0] ?? null;
   const managerEmployeeId = request.body?.managerEmployeeId === "" || request.body?.managerEmployeeId == null ? null : Number(request.body.managerEmployeeId);
   const mentorEmployeeId = request.body?.mentorEmployeeId === "" || request.body?.mentorEmployeeId == null ? null : Number(request.body.mentorEmployeeId);
-  const startDate = request.body?.startDate;
+  const requestedStartDate = request.body?.startDate;
+  const startDate = typeof requestedStartDate === "string" && requestedStartDate.trim() ? requestedStartDate.trim() : null;
   const isActive = request.body?.isActive;
   if (!name || name.length > 160 || !email || email.length > 254 || !/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(email)) {
     return response.status(400).json({ error: "Informe nome e um e-mail válido." });
   }
   if (jobTitle.length > 120) return response.status(400).json({ error: "O cargo pode ter até 120 caracteres." });
-  if (!isValidDateOnly(startDate)) return response.status(400).json({ error: "Informe uma data de entrada válida." });
+  if (startDate && !isValidDateOnly(startDate)) return response.status(400).json({ error: "Informe uma data de entrada válida." });
   if (typeof isActive !== "boolean") return response.status(400).json({ error: "Informe se a conta está ativa." });
   if (managerEmployeeId !== null && (!Number.isSafeInteger(managerEmployeeId) || managerEmployeeId <= 0 || managerEmployeeId === accountId)) return response.status(400).json({ error: "Selecione uma liderança válida." });
   if (mentorEmployeeId !== null && (!Number.isSafeInteger(mentorEmployeeId) || mentorEmployeeId <= 0 || mentorEmployeeId === accountId || mentorEmployeeId === managerEmployeeId)) return response.status(400).json({ error: "Selecione uma pessoa mentora diferente do funcionário e da liderança direta." });
@@ -2141,10 +2262,12 @@ app.patch("/api/hr/accounts/:accountId", requireHr, async (request, response) =>
         RETURNING onboarding.onboarding_id
       `, [accountId, mentorEmployeeId, startDate]);
       if (!activeOnboarding.rowCount) {
-        await client.query(`
-          INSERT INTO public.onboardings (employee_id, mentor_employee_id, start_date, status)
-          VALUES ($1, $2, $3::date, 'active')
-        `, [accountId, mentorEmployeeId, startDate]);
+        if (startDate || mentorEmployeeId !== null) {
+          await client.query(`
+            INSERT INTO public.onboardings (employee_id, mentor_employee_id, start_date, status)
+            VALUES ($1, $2, $3::date, 'active')
+          `, [accountId, mentorEmployeeId, startDate]);
+        }
       }
       await client.query("COMMIT");
       transactionStarted = false;
@@ -2177,6 +2300,7 @@ app.get("/api/hr/accounts/:accountId/plan", requireHr, async (request, response)
         plan_task.owner_role AS "ownerRole", plan_task.owner_employee_id AS "ownerEmployeeId",
         task_owner.full_name AS "ownerName", plan_task.due_offset_days AS "dueOffsetDays",
         plan_task.responsible_department_id AS "responsibleDepartmentId", department.name AS "responsibleDepartment",
+        COALESCE(NULLIF(plan_task.responsible_department_ids, '{}'), ARRAY[plan_task.responsible_department_id]) AS "responsibleDepartmentIds",
         plan_task.is_required AS required
       FROM public.employee_plan_tasks AS plan_task
       INNER JOIN public.stage_templates AS stage ON stage.stage_template_id = plan_task.stage_template_id
@@ -2193,6 +2317,8 @@ app.get("/api/hr/accounts/:accountId/plan", requireHr, async (request, response)
       INNER JOIN public.stage_templates AS stage ON stage.stage_template_id = plan_resource.stage_template_id
       INNER JOIN public.resources AS resource ON resource.resource_id = plan_resource.resource_id
       WHERE plan_resource.employee_id = $1
+        AND (NOT EXISTS (SELECT 1 FROM public.resource_audiences AS audience WHERE audience.resource_id = resource.resource_id)
+          OR EXISTS (SELECT 1 FROM public.resource_audiences AS audience WHERE audience.resource_id = resource.resource_id AND audience.employee_id = $1))
       ORDER BY stage.display_order, plan_resource.display_order, resource.title;
     `, [accountId]);
     const configured = await pool.query("SELECT 1 FROM public.employee_plan_configurations WHERE employee_id = $1", [accountId]);
@@ -2225,14 +2351,22 @@ app.put("/api/hr/accounts/:accountId/plan", requireHr, async (request, response)
       return response.status(404).json({ error: "Conta não encontrada." });
     }
     const stageIds = [...new Set([...tasks.map((task) => Number(task.stageTemplateId)), ...resources.map((resource) => Number(resource.stageTemplateId))])];
+    let validatedStages = [];
     if (stageIds.length) {
-      const stages = await client.query("SELECT stage_template_id FROM public.stage_templates WHERE is_active IS TRUE AND stage_template_id = ANY($1::int[])", [stageIds]);
-      if (stages.rowCount !== stageIds.length) {
+      const stageResult = await client.query("SELECT stage_template_id, stage_code FROM public.stage_templates WHERE is_active IS TRUE AND stage_template_id = ANY($1::int[])", [stageIds]);
+      if (stageResult.rowCount !== stageIds.length) {
         await client.query("ROLLBACK");
         return response.status(400).json({ error: "Uma ou mais etapas não existem ou estão inativas." });
       }
+      validatedStages = stageResult.rows;
     }
-    const ownerIds = [...new Set(tasks.map((task) => Number(task.ownerEmployeeId)).filter((id) => Number.isSafeInteger(id) && id > 0))];
+    const tasksForStorage = normalizeTaskTypesForStages(tasks, validatedStages);
+    const assignmentError = validateTaskAssignments(tasksForStorage, validatedStages);
+    if (assignmentError) {
+      await client.query("ROLLBACK");
+      return response.status(400).json({ error: assignmentError });
+    }
+    const ownerIds = [...new Set(tasksForStorage.map((task) => Number(task.ownerEmployeeId)).filter((id) => Number.isSafeInteger(id) && id > 0))];
     if (ownerIds.length) {
       const owners = await client.query("SELECT employee_id FROM public.employees WHERE is_active IS TRUE AND employee_id = ANY($1::int[])", [ownerIds]);
       if (owners.rowCount !== ownerIds.length) {
@@ -2240,7 +2374,7 @@ app.put("/api/hr/accounts/:accountId/plan", requireHr, async (request, response)
         return response.status(400).json({ error: "Uma ou mais pessoas responsáveis não existem ou estão inativas." });
       }
     }
-    const departmentIds = [...new Set(tasks.map((task) => Number(task.responsibleDepartmentId)).filter((id) => Number.isSafeInteger(id) && id > 0))];
+    const departmentIds = [...new Set(tasksForStorage.flatMap((task) => [...(task.responsibleDepartmentIds ?? []), task.responsibleDepartmentId].map(Number)).filter((id) => Number.isSafeInteger(id) && id > 0))];
     if (departmentIds.length) {
       const validDepartments = await client.query("SELECT department_id FROM public.departments WHERE department_id = ANY($1::int[])", [departmentIds]);
       if (validDepartments.rowCount !== departmentIds.length) {
@@ -2250,7 +2384,11 @@ app.put("/api/hr/accounts/:accountId/plan", requireHr, async (request, response)
     }
     const resourceIds = [...new Set(resources.flatMap((resource) => resource.resourceIds.map(Number)))];
     if (resourceIds.length) {
-      const published = await client.query("SELECT resource_id FROM public.resources WHERE status = 'published' AND resource_id = ANY($1::bigint[])", [resourceIds]);
+      const published = await client.query(`SELECT resource.resource_id FROM public.resources AS resource
+        WHERE resource.status = 'published'
+          AND (NOT EXISTS (SELECT 1 FROM public.resource_audiences AS audience WHERE audience.resource_id = resource.resource_id)
+            OR EXISTS (SELECT 1 FROM public.resource_audiences AS audience WHERE audience.resource_id = resource.resource_id AND audience.employee_id = $2))
+          AND resource.resource_id = ANY($1::bigint[])`, [resourceIds, accountId]);
       if (published.rowCount !== resourceIds.length) {
         await client.query("ROLLBACK");
         return response.status(400).json({ error: "Um ou mais materiais não estão publicados ou não existem." });
@@ -2264,21 +2402,21 @@ app.put("/api/hr/accounts/:accountId/plan", requireHr, async (request, response)
       ON CONFLICT (employee_id) DO UPDATE SET updated_at = CURRENT_TIMESTAMP
     `, [accountId]);
     const stageOrders = new Map();
-    for (const task of tasks) {
+    for (const task of tasksForStorage) {
       const stageId = Number(task.stageTemplateId);
       const displayOrder = stageOrders.get(stageId) ?? 0;
       stageOrders.set(stageId, displayOrder + 1);
       await client.query(`
         INSERT INTO public.employee_plan_tasks (
           employee_id, stage_template_id, title, description, category, task_type,
-          owner_employee_id, owner_role, due_offset_days, is_required, display_order, responsible_department_id, updated_at
+          owner_employee_id, owner_role, due_offset_days, is_required, display_order, responsible_department_id, responsible_department_ids, updated_at
         ) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, COALESCE($12::int,
           (SELECT COALESCE((SELECT membership.department_id FROM public.employee_departments AS membership
             WHERE membership.employee_id = employee.employee_id AND membership.is_primary IS TRUE LIMIT 1), employee.department_id)
-            FROM public.employees AS employee WHERE employee.employee_id = $7)), CURRENT_TIMESTAMP)
+            FROM public.employees AS employee WHERE employee.employee_id = $7)), $13::int[], CURRENT_TIMESTAMP)
       `, [accountId, stageId, task.title.trim(), task.description.trim(), task.category, task.taskType,
         task.ownerEmployeeId == null || task.ownerEmployeeId === "" ? null : Number(task.ownerEmployeeId),
-        task.ownerRole.trim(), Number(task.dueOffsetDays), task.required, displayOrder, task.responsibleDepartmentId || null]);
+        task.ownerRole.trim(), Number(task.dueOffsetDays), task.required, displayOrder, task.responsibleDepartmentId || task.responsibleDepartmentIds?.[0] || null, task.responsibleDepartmentIds?.map(Number) ?? []]);
     }
     const resourceOrders = new Map();
     for (const stageResources of resources) {
@@ -2294,7 +2432,7 @@ app.put("/api/hr/accounts/:accountId/plan", requireHr, async (request, response)
       }
     }
     await client.query("COMMIT");
-    return response.json({ saved: tasks.length, savedResources: resourceIds.length });
+    return response.json({ saved: tasksForStorage.length, savedResources: resourceIds.length });
   } catch (error) {
     await client.query("ROLLBACK").catch(() => undefined);
     console.error("Could not save employee plan:", error.message);
@@ -2657,7 +2795,10 @@ app.get("/api/resources/:resourceId/download", requireAuthenticated, async (requ
       FROM public.resources AS resource
       LEFT JOIN public.resource_files AS file ON file.resource_id = resource.resource_id
       WHERE resource.resource_id = $1 AND resource.status = 'published'
-    `, [resourceId]);
+        AND ($2::boolean IS TRUE
+          OR NOT EXISTS (SELECT 1 FROM public.resource_audiences AS audience WHERE audience.resource_id = resource.resource_id)
+          OR EXISTS (SELECT 1 FROM public.resource_audiences AS audience WHERE audience.resource_id = resource.resource_id AND audience.employee_id = $3))
+    `, [resourceId, request.authenticatedEmployee.is_hr_admin === true, request.authenticatedEmployee.employee_id]);
     const resource = result.rows[0];
     if (!resource || !resource.blob_name) return response.status(404).json({ error: "Arquivo não encontrado." });
 
@@ -2702,7 +2843,15 @@ app.get("/api/resources", requireAuthenticated, async (request, response) => {
         resource.description,
         resource.format,
         resource.mime_type,
-        resource.owner_employee_id,
+        NOT EXISTS (SELECT 1 FROM public.resource_audiences AS visibility WHERE visibility.resource_id = resource.resource_id) AS is_public,
+        CASE WHEN $1::boolean IS TRUE THEN COALESCE((SELECT json_agg(audience.employee_id ORDER BY employee.full_name)
+          FROM public.resource_audiences AS audience
+          INNER JOIN public.employees AS employee ON employee.employee_id = audience.employee_id
+          WHERE audience.resource_id = resource.resource_id), '[]'::json) ELSE '[]'::json END AS audience_employee_ids,
+        CASE WHEN $1::boolean IS TRUE THEN COALESCE((SELECT json_agg(employee.full_name ORDER BY employee.full_name)
+          FROM public.resource_audiences AS audience
+          INNER JOIN public.employees AS employee ON employee.employee_id = audience.employee_id
+          WHERE audience.resource_id = resource.resource_id), '[]'::json) ELSE '[]'::json END AS audience_names,
         category.slug AS category_slug,
         category.name AS category,
         department.name AS owner_department,
@@ -2720,9 +2869,11 @@ app.get("/api/resources", requireAuthenticated, async (request, response) => {
       LEFT JOIN public.departments AS department
         ON department.department_id = resource.owner_department_id
       WHERE resource.status = 'published'
-        AND ($1::boolean IS TRUE OR resource.owner_employee_id IS NOT NULL)
+        AND ($1::boolean IS TRUE
+          OR NOT EXISTS (SELECT 1 FROM public.resource_audiences AS audience WHERE audience.resource_id = resource.resource_id)
+          OR EXISTS (SELECT 1 FROM public.resource_audiences AS audience WHERE audience.resource_id = resource.resource_id AND audience.employee_id = $2))
       ORDER BY category.name, resource.title;
-    `, [request.authenticatedEmployee.is_hr_admin === true]);
+    `, [request.authenticatedEmployee.is_hr_admin === true, request.authenticatedEmployee.employee_id]);
 
     response.json(result.rows);
   } catch (error) {
