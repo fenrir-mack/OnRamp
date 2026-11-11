@@ -9,6 +9,8 @@
     "start": "node server/index.js",
     "db:setup": "node --env-file=.env.local scripts/setup-local-db.js",
     "db:setup:cloud": "node --env-file=.env.cloud scripts/setup-local-db.js",
+    "db:demo": "node --env-file=.env.local scripts/manage-demo-content.js seed",
+    "db:demo:clear": "node --env-file=.env.local scripts/manage-demo-content.js clear",
     "build": "vite build",
     "preview": "vite preview",
     "format": "oxfmt"

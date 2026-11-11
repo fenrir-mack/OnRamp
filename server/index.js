@@ -515,7 +515,7 @@ app.post("/api/me/plan/tasks/:taskId/feedback", requireAuthenticated, async (req
 app.get("/api/hr/onboarding-support", requireHr, async (_request, response) => {
   try {
     const [checkIns, requests, feedback] = await Promise.all([
-      pool.query(`SELECT checkin.check_in_id AS id, checkin.employee_id AS "employeeId", employee.full_name AS "employeeName", employee.email AS "employeeEmail", employee.job_title AS "jobTitle", department.name AS department, task.title AS "taskTitle", checkin.feeling, checkin.comment, checkin.difficulties, checkin.support_request AS "supportRequest", checkin.needs_support AS "needsSupport", checkin.follow_up_status AS "followUpStatus", checkin.submitted_at AS "submittedAt" FROM public.check_ins AS checkin INNER JOIN public.employees AS employee ON employee.employee_id = checkin.employee_id LEFT JOIN public.departments AS department ON department.department_id = employee.department_id LEFT JOIN public.employee_plan_tasks AS task ON task.employee_plan_task_id = checkin.employee_plan_task_id ORDER BY checkin.needs_support DESC, checkin.submitted_at DESC`),
+      pool.query(`SELECT checkin.check_in_id AS id, checkin.employee_id AS "employeeId", employee.full_name AS "employeeName", employee.email AS "employeeEmail", employee.job_title AS "jobTitle", department.name AS department, task.title AS "taskTitle", checkin.feeling, checkin.comment, checkin.difficulties, checkin.support_request AS "supportRequest", checkin.needs_support AS "needsSupport", checkin.follow_up_status AS "followUpStatus", checkin.submitted_at AS "submittedAt", EXISTS (SELECT 1 FROM public.employee_check_in_chats AS chat WHERE chat.check_in_id = checkin.check_in_id) AS "hasChat" FROM public.check_ins AS checkin INNER JOIN public.employees AS employee ON employee.employee_id = checkin.employee_id LEFT JOIN public.departments AS department ON department.department_id = employee.department_id LEFT JOIN public.employee_plan_tasks AS task ON task.employee_plan_task_id = checkin.employee_plan_task_id ORDER BY checkin.needs_support DESC, checkin.submitted_at DESC`),
       pool.query(`SELECT request.employee_support_request_id AS id, request.employee_id AS "employeeId", employee.full_name AS "employeeName", employee.email AS "employeeEmail", employee.job_title AS "jobTitle", department.name AS department, request.category, request.subject, request.description, request.status, request.follow_up_note AS "followUpNote", request.submitted_at AS "submittedAt", request.updated_at AS "updatedAt", EXISTS (SELECT 1 FROM public.employee_support_request_messages AS message WHERE message.employee_support_request_id = request.employee_support_request_id) AS "hasChat" FROM public.employee_support_requests AS request INNER JOIN public.employees AS employee ON employee.employee_id = request.employee_id LEFT JOIN public.departments AS department ON department.department_id = employee.department_id ORDER BY CASE request.status WHEN 'open' THEN 0 WHEN 'in_progress' THEN 1 ELSE 2 END, request.submitted_at DESC`),
       pool.query(`SELECT feedback.onboarding_feedback_id AS id, feedback.employee_id AS "employeeId", employee.full_name AS "employeeName", employee.email AS "employeeEmail", employee.job_title AS "jobTitle", department.name AS department, feedback.rating, feedback.what_went_well AS "whatWentWell", feedback.what_to_improve AS "whatToImprove", feedback.submitted_at AS "submittedAt" FROM public.onboarding_feedback AS feedback INNER JOIN public.employees AS employee ON employee.employee_id = feedback.employee_id LEFT JOIN public.departments AS department ON department.department_id = employee.department_id ORDER BY feedback.submitted_at DESC`),
     ]);
@@ -524,6 +524,96 @@ app.get("/api/hr/onboarding-support", requireHr, async (_request, response) => {
     console.error("Could not load HR onboarding support:", error.message);
     return response.status(500).json({ error: "Não foi possível carregar os acompanhamentos." });
   }
+});
+
+app.get("/api/check-ins/conversations", requireAuthenticated, async (request, response) => {
+  const employeeId = request.authenticatedEmployee.employee_id;
+  const isHrAdmin = request.authenticatedEmployee.is_hr_admin === true;
+  try {
+    const result = await pool.query(`
+      SELECT checkin.check_in_id AS id, checkin.employee_id AS "employeeId",
+        employee.full_name AS "employeeName", department.name AS "employeeDepartment",
+        task.title AS "taskTitle", checkin.feeling, checkin.comment, checkin.difficulties,
+        checkin.support_request AS "supportRequest", checkin.follow_up_status AS "followUpStatus",
+        checkin.submitted_at AS "submittedAt", chat.created_at AS "chatStartedAt",
+        COALESCE(last_message.body, 'Conversa iniciada') AS "lastMessage",
+        COALESCE(last_message.sent_at, chat.created_at) AS "lastMessageAt"
+      FROM public.employee_check_in_chats AS chat
+      INNER JOIN public.check_ins AS checkin ON checkin.check_in_id = chat.check_in_id
+      INNER JOIN public.employees AS employee ON employee.employee_id = checkin.employee_id
+      LEFT JOIN public.departments AS department ON department.department_id = employee.department_id
+      LEFT JOIN public.employee_plan_tasks AS task ON task.employee_plan_task_id = checkin.employee_plan_task_id
+      LEFT JOIN LATERAL (
+        SELECT message.body, message.sent_at
+        FROM public.employee_check_in_chat_messages AS message
+        WHERE message.check_in_id = checkin.check_in_id
+        ORDER BY message.sent_at DESC, message.employee_check_in_chat_message_id DESC LIMIT 1
+      ) AS last_message ON TRUE
+      WHERE ($1::boolean OR checkin.employee_id = $2)
+      ORDER BY COALESCE(last_message.sent_at, chat.created_at) DESC, checkin.check_in_id DESC
+    `, [isHrAdmin, employeeId]);
+    return response.json({ conversations: result.rows });
+  } catch (error) {
+    console.error("Could not load check-in chat conversations:", error.message);
+    return response.status(500).json({ error: "Não foi possível carregar as conversas dos check-ins." });
+  }
+});
+
+app.post("/api/hr/check-ins/:checkInId/start-chat", requireHr, async (request, response) => {
+  const checkInId = parseAccountId(request.params.checkInId);
+  if (!checkInId) return response.status(400).json({ error: "Check-in inválido." });
+  const client = await pool.connect();
+  try {
+    await client.query("BEGIN");
+    const checkIn = await client.query(`SELECT check_in_id FROM public.check_ins WHERE check_in_id = $1 FOR UPDATE`, [checkInId]);
+    if (!checkIn.rowCount) { await client.query("ROLLBACK"); return response.status(404).json({ error: "Check-in não encontrado." }); }
+    await client.query(`INSERT INTO public.employee_check_in_chats (check_in_id, started_by_employee_id) VALUES ($1, $2) ON CONFLICT (check_in_id) DO NOTHING`, [checkInId, request.authenticatedEmployee.employee_id]);
+    const updated = await client.query(`UPDATE public.check_ins SET needs_support = TRUE, follow_up_status = CASE WHEN follow_up_status = 'resolved' THEN 'resolved' ELSE 'in_progress' END WHERE check_in_id = $1 RETURNING follow_up_status AS status`, [checkInId]);
+    await client.query("COMMIT");
+    return response.json({ started: true, status: updated.rows[0].status });
+  } catch (error) {
+    await client.query("ROLLBACK").catch(() => undefined);
+    console.error("Could not start check-in chat:", error.message);
+    return response.status(500).json({ error: "Não foi possível iniciar o chat." });
+  } finally { client.release(); }
+});
+
+app.get("/api/check-ins/:checkInId/messages", requireAuthenticated, async (request, response) => {
+  const checkInId = parseAccountId(request.params.checkInId);
+  if (!checkInId) return response.status(400).json({ error: "Check-in inválido." });
+  const employeeId = request.authenticatedEmployee.employee_id;
+  const isHrAdmin = request.authenticatedEmployee.is_hr_admin === true;
+  try {
+    const checkIn = await pool.query(`SELECT checkin.check_in_id FROM public.employee_check_in_chats AS chat INNER JOIN public.check_ins AS checkin ON checkin.check_in_id = chat.check_in_id WHERE checkin.check_in_id = $1 AND ($2::boolean OR checkin.employee_id = $3)`, [checkInId, isHrAdmin, employeeId]);
+    if (!checkIn.rowCount) return response.status(404).json({ error: "Conversa não encontrada." });
+    const messages = await pool.query(`SELECT message.employee_check_in_chat_message_id AS id, message.sender_employee_id AS "senderEmployeeId", sender.full_name AS "senderName", message.body, message.sent_at AS "sentAt", (message.sender_employee_id = $2) AS "isMine" FROM public.employee_check_in_chat_messages AS message INNER JOIN public.employees AS sender ON sender.employee_id = message.sender_employee_id WHERE message.check_in_id = $1 ORDER BY message.sent_at, message.employee_check_in_chat_message_id`, [checkInId, employeeId]);
+    return response.json({ messages: messages.rows });
+  } catch (error) {
+    console.error("Could not load check-in chat:", error.message);
+    return response.status(500).json({ error: "Não foi possível carregar o chat." });
+  }
+});
+
+app.post("/api/check-ins/:checkInId/messages", requireAuthenticated, async (request, response) => {
+  const checkInId = parseAccountId(request.params.checkInId);
+  const body = typeof request.body?.body === "string" ? request.body.body.trim() : "";
+  if (!checkInId || !body || body.length > 4000) return response.status(400).json({ error: "Escreva uma mensagem de até 4.000 caracteres." });
+  const employeeId = request.authenticatedEmployee.employee_id;
+  const isHrAdmin = request.authenticatedEmployee.is_hr_admin === true;
+  const client = await pool.connect();
+  try {
+    await client.query("BEGIN");
+    const checkIn = await client.query(`SELECT checkin.check_in_id FROM public.employee_check_in_chats AS chat INNER JOIN public.check_ins AS checkin ON checkin.check_in_id = chat.check_in_id WHERE checkin.check_in_id = $1 AND ($2::boolean OR checkin.employee_id = $3) FOR UPDATE OF checkin`, [checkInId, isHrAdmin, employeeId]);
+    if (!checkIn.rowCount) { await client.query("ROLLBACK"); return response.status(404).json({ error: "Conversa não encontrada." }); }
+    const inserted = await client.query(`INSERT INTO public.employee_check_in_chat_messages (check_in_id, sender_employee_id, body) VALUES ($1, $2, $3) RETURNING employee_check_in_chat_message_id AS id, sender_employee_id AS "senderEmployeeId", body, sent_at AS "sentAt"`, [checkInId, employeeId, body]);
+    await client.query(`UPDATE public.check_ins SET needs_support = TRUE, follow_up_status = CASE WHEN follow_up_status = 'resolved' THEN 'resolved' ELSE 'in_progress' END WHERE check_in_id = $1`, [checkInId]);
+    await client.query("COMMIT");
+    return response.status(201).json({ ...inserted.rows[0], senderName: request.authenticatedEmployee.full_name, isMine: true });
+  } catch (error) {
+    await client.query("ROLLBACK").catch(() => undefined);
+    console.error("Could not send check-in chat message:", error.message);
+    return response.status(500).json({ error: "Não foi possível enviar a mensagem." });
+  } finally { client.release(); }
 });
 
 app.patch("/api/hr/check-ins/:checkInId", requireHr, async (request, response) => {

@@ -26,6 +26,10 @@ function PreparationView() {
   const [savingId, setSavingId] = useState<number | null>(null);
   const [selectedEmployeeId, setSelectedEmployeeId] = useState<number | null>(null);
   const [statusEdits, setStatusEdits] = useState<Record<number, { status: PreparationTask["status"]; comment: string }>>({});
+  const [queueView, setQueueView] = useState<"people" | "tasks">("people");
+  const [showAllPeople, setShowAllPeople] = useState(false);
+  const [taskSort, setTaskSort] = useState<"people" | "urgency">("people");
+  const [nameQuery, setNameQuery] = useState("");
 
   useEffect(() => {
     let active = true;
@@ -125,6 +129,28 @@ function PreparationView() {
     })
     .sort((left, right) => left.nextTask && right.nextTask ? compareUrgency(left.nextTask, right.nextTask) : left.nextTask ? -1 : right.nextTask ? 1 : left.employeeName.localeCompare(right.employeeName, "pt-BR"));
   const selectedPerson = peopleGroups.find((person) => person.employeeId === selectedEmployeeId) ?? null;
+  const sharedTaskGroups = [...tasks.reduce((groups, task) => {
+    if (closedStatuses.has(task.status)) return groups;
+    const key = task.title.trim().toLocaleLowerCase("pt-BR");
+    const group = groups.get(key) ?? { title: task.title, category: task.category, tasks: [] as PreparationTask[] };
+    group.tasks.push(task);
+    groups.set(key, group);
+    return groups;
+  }, new Map<string, { title: string; category: string; tasks: PreparationTask[] }>()).values()]
+    .filter((group) => new Set(group.tasks.map((task) => task.employeeId)).size >= 2)
+    .map((group) => {
+      const people = [...new Map(group.tasks.map((task) => [task.employeeId, task])).values()];
+      const nextTask = [...group.tasks].sort(compareUrgency)[0];
+      const overdueCount = group.tasks.filter((task) => task.dueDate.slice(0, 10) < today).length;
+      return { ...group, people, nextTask, overdueCount };
+    })
+    .sort((left, right) => taskSort === "people"
+      ? right.people.length - left.people.length || right.overdueCount - left.overdueCount || compareUrgency(left.nextTask, right.nextTask)
+      : right.overdueCount - left.overdueCount || compareUrgency(left.nextTask, right.nextTask) || right.people.length - left.people.length);
+  const normalizedNameQuery = nameQuery.trim().toLocaleLowerCase("pt-BR");
+  const filteredPeopleGroups = peopleGroups.filter((person) => person.employeeName.toLocaleLowerCase("pt-BR").includes(normalizedNameQuery));
+  const visiblePeopleGroups = showAllPeople ? filteredPeopleGroups : filteredPeopleGroups.slice(0, 8);
+  const visibleSharedTaskGroups = sharedTaskGroups.filter((group) => !normalizedNameQuery || group.people.some((person) => person.employeeName.toLocaleLowerCase("pt-BR").includes(normalizedNameQuery)));
 
   return <section>
     {!selectedPerson && <h1 className="text-3xl font-extrabold tracking-tight">Novas admissões</h1>}
@@ -162,16 +188,53 @@ function PreparationView() {
         })}
       </section>)}</div>
       </article>
-    </> : peopleGroups.length ? <div className="space-y-2">{peopleGroups.map((person) => {
-      const urgentTask = person.nextTask;
-      const urgentDate = urgentTask?.dueDate.slice(0, 10) ?? "";
-      const urgentLabel = urgentTask ? urgentDate < today ? `Mais urgente: atrasada · ${formatDate(urgentDate)}` : urgentDate === today ? "Mais urgente: vence hoje" : `Próximo prazo: ${formatDate(urgentDate)}` : "Todas as tarefas concluídas";
-      return <button className="content-panel flex w-full flex-wrap items-center gap-2.5 !p-3 text-left transition hover:border-[#c9c8ed] hover:bg-[#fcfbff] sm:!p-3.5" key={person.employeeId} onClick={() => setSelectedEmployeeId(person.employeeId)} type="button">
-        <EmployeeAvatar employeeId={person.employeeId} name={person.employeeName} className="grid size-9 shrink-0 place-items-center rounded-xl bg-[#e9e8ff] text-xs font-extrabold text-[#5859d6]" />
-        <span className="min-w-0 flex-1"><strong className="block truncate text-sm text-[#303249]">{person.employeeName}</strong><small className="block truncate text-[11px] text-[#85879a]">{person.department ?? "Área não definida"} · Entrada {formatDate(person.startDate)}</small><small className={`block text-[11px] font-semibold ${urgentTask && urgentDate < today ? "text-red-700" : "text-[#777a91]"}`}>{urgentLabel}</small></span>
-        <span className="rounded-full bg-[#f5f5f9] px-2.5 py-1 text-[11px] font-bold text-[#55576d]">{person.tasks.length} tarefas</span><span className="shrink-0 text-base text-[#8b8da0]">›</span>
-      </button>;
-    })}</div> : <p className="content-panel text-sm text-[#85879a]">Ainda não há tarefas de preparação que você possa acompanhar.</p>}</div>
+    </> : peopleGroups.length ? <>
+      <div className="flex flex-wrap items-center justify-between gap-3">
+        <div className="flex flex-wrap items-center gap-2">
+          <div aria-label="Modo da fila" className="inline-flex rounded-xl bg-[#eeedf5] p-1" role="group">
+            <button aria-pressed={queueView === "people"} className={`rounded-lg px-3 py-2 text-xs font-bold transition ${queueView === "people" ? "bg-white text-[#5556d8] shadow-sm" : "text-[#777a91] hover:text-[#303249]"}`} onClick={() => setQueueView("people")} type="button">Por pessoa</button>
+            <button aria-pressed={queueView === "tasks"} className={`rounded-lg px-3 py-2 text-xs font-bold transition ${queueView === "tasks" ? "bg-white text-[#5556d8] shadow-sm" : "text-[#777a91] hover:text-[#303249]"}`} onClick={() => setQueueView("tasks")} type="button">Tarefas compartilhadas</button>
+          </div>
+          <label className="sr-only" htmlFor="preparation-name-search">Buscar por nome</label>
+          <input autoComplete="off" className="w-full rounded-xl border border-[#e3e3ed] bg-white px-3 py-2.5 text-xs text-[#303249] outline-none transition placeholder:text-[#999bad] focus:border-[#a9a8e7] focus:ring-2 focus:ring-[#eeeeff] sm:w-56" id="preparation-name-search" onChange={(event) => setNameQuery(event.target.value)} placeholder="Buscar por nome" type="search" value={nameQuery} />
+        </div>
+        <span className="text-xs font-semibold text-[#85879a]">{queueView === "people" ? `${filteredPeopleGroups.length} pessoas` : `${sharedTaskGroups.filter((group) => !normalizedNameQuery || group.people.some((person) => person.employeeName.toLocaleLowerCase("pt-BR").includes(normalizedNameQuery))).length} tarefas compartilhadas`}</span>
+      </div>
+      {queueView === "people" ? <>
+        <div className="grid grid-cols-1 gap-2 sm:grid-cols-2">{visiblePeopleGroups.map((person) => {
+          const urgentTask = person.nextTask;
+          const urgentDate = urgentTask?.dueDate.slice(0, 10) ?? "";
+          const urgentLabel = urgentTask ? urgentDate < today ? `Mais urgente: atrasada · ${formatDate(urgentDate)}` : urgentDate === today ? "Mais urgente: vence hoje" : `Próximo prazo: ${formatDate(urgentDate)}` : "Todas as tarefas concluídas";
+          return <button className="content-panel flex min-h-[92px] w-full flex-wrap items-center gap-2.5 !p-3 text-left transition hover:border-[#c9c8ed] hover:bg-[#fcfbff] sm:!p-3.5" key={person.employeeId} onClick={() => setSelectedEmployeeId(person.employeeId)} type="button">
+            <EmployeeAvatar employeeId={person.employeeId} name={person.employeeName} className="grid size-9 shrink-0 place-items-center rounded-xl bg-[#e9e8ff] text-xs font-extrabold text-[#5859d6]" />
+            <span className="min-w-0 flex-1"><strong className="block truncate text-sm text-[#303249]">{person.employeeName}</strong><small className="block truncate text-[11px] text-[#85879a]">{person.department ?? "Área não definida"} · Entrada {formatDate(person.startDate)}</small><small className={`block text-[11px] font-semibold ${urgentTask && urgentDate < today ? "text-red-700" : "text-[#777a91]"}`}>{urgentLabel}</small></span>
+            <span className="rounded-full bg-[#f5f5f9] px-2.5 py-1 text-[11px] font-bold text-[#55576d]">{person.tasks.length} tarefas</span><span className="shrink-0 text-base text-[#8b8da0]">›</span>
+          </button>;
+        })}</div>
+        {filteredPeopleGroups.length > 8 && <button className="w-full rounded-xl border border-[#e3e3ed] bg-white px-4 py-3 text-sm font-bold text-[#5556d8] transition hover:border-[#c9c8ed] hover:bg-[#fcfbff]" onClick={() => setShowAllPeople((current) => !current)} type="button">{showAllPeople ? "Mostrar menos" : `Mostrar todas as pessoas (${filteredPeopleGroups.length})`}</button>}
+        {filteredPeopleGroups.length === 0 && <p className="content-panel text-sm text-[#85879a]">Nenhuma pessoa encontrada com esse nome.</p>}
+      </> : <section className="space-y-3">
+        <div className="flex flex-wrap items-center justify-between gap-3 rounded-xl border border-[#e9e8f0] bg-white p-3">
+          <p className="text-xs text-[#777a91]">Tarefas abertas que aparecem nas jornadas de pelo menos duas pessoas.</p>
+          <div aria-label="Ordenar tarefas compartilhadas" className="inline-flex rounded-lg bg-[#f4f4f8] p-1" role="group">
+            <button aria-pressed={taskSort === "people"} className={`rounded-md px-3 py-1.5 text-xs font-bold ${taskSort === "people" ? "bg-white text-[#5556d8] shadow-sm" : "text-[#777a91]"}`} onClick={() => setTaskSort("people")} type="button">Mais pessoas</button>
+            <button aria-pressed={taskSort === "urgency"} className={`rounded-md px-3 py-1.5 text-xs font-bold ${taskSort === "urgency" ? "bg-white text-[#5556d8] shadow-sm" : "text-[#777a91]"}`} onClick={() => setTaskSort("urgency")} type="button">Mais urgente</button>
+          </div>
+        </div>
+        {visibleSharedTaskGroups.length ? visibleSharedTaskGroups.map((group) => {
+          const dueDate = group.nextTask.dueDate.slice(0, 10);
+          const visibleGroupPeople = group.people.filter((person) => !normalizedNameQuery || person.employeeName.toLocaleLowerCase("pt-BR").includes(normalizedNameQuery));
+          return <article className="content-panel space-y-3 !p-4" key={`${group.category}-${group.title}`}>
+            <header className="flex flex-wrap items-start justify-between gap-3">
+              <div className="min-w-0"><p className="text-[11px] font-bold uppercase tracking-wide text-[#85879a]">{group.category || "Geral"}</p><h3 className="mt-1 font-extrabold text-[#303249]">{group.title}</h3></div>
+              <div className="flex shrink-0 gap-2"><span className="rounded-full bg-[#f0efff] px-3 py-1 text-xs font-bold text-[#5556d8]">{normalizedNameQuery ? `${visibleGroupPeople.length} de ${group.people.length} pessoas` : `${group.people.length} pessoas`}</span>{group.overdueCount > 0 && <span className="rounded-full bg-red-50 px-3 py-1 text-xs font-bold text-red-700">{group.overdueCount} atrasadas</span>}</div>
+            </header>
+            <p className={`text-xs font-semibold ${group.overdueCount ? "text-red-700" : "text-[#777a91]"}`}>{group.overdueCount ? `${group.overdueCount} pessoa(s) estão com esta tarefa atrasada` : dueDate === today ? "Próximo prazo: hoje" : `Próximo prazo: ${formatDate(dueDate)}`}</p>
+            <div className="flex flex-wrap gap-2">{visibleGroupPeople.map((personTask) => <button className="inline-flex items-center gap-2 rounded-full border border-[#e7e6ef] bg-white py-1 pl-1 pr-3 text-xs font-semibold text-[#55576d] transition hover:border-[#c9c8ed] hover:text-[#5556d8]" key={personTask.employeeId} onClick={() => setSelectedEmployeeId(personTask.employeeId)} type="button"><EmployeeAvatar employeeId={personTask.employeeId} name={personTask.employeeName} className="grid size-7 place-items-center rounded-full bg-[#e9e8ff] text-[9px] font-extrabold text-[#5859d6]" />{personTask.employeeName}</button>)}</div>
+          </article>;
+        }) : <p className="content-panel text-sm text-[#85879a]">{normalizedNameQuery ? "Nenhuma tarefa compartilhada encontrada para esse nome." : "Ainda não há tarefas abertas compartilhadas por mais de uma pessoa."}</p>}
+      </section>}
+      </> : <p className="content-panel text-sm text-[#85879a]">Ainda não há tarefas de preparação que você possa acompanhar.</p>}</div>
   </section>;
 }
 

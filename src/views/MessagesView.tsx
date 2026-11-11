@@ -67,19 +67,41 @@ type SupportRequestChatMessage = {
   sentAt: string
   isMine: boolean
 }
+type CheckInChatConversation = {
+  id: number
+  employeeId: number
+  employeeName: string
+  employeeDepartment: string | null
+  taskTitle: string | null
+  feeling: string | null
+  comment: string | null
+  difficulties: string | null
+  supportRequest: string | null
+  followUpStatus: string
+  submittedAt: string
+  chatStartedAt: string
+  lastMessage: string
+  lastMessageAt: string
+}
+type CheckInChatMessage = SupportRequestChatMessage
 
 function MessagesView({
   employee,
   onUnreadCountChange,
   requestedSupportRequestId,
   onSupportRequestOpened,
+  requestedCheckInChatId,
+  onCheckInChatOpened,
 }: {
   employee: AuthenticatedEmployee
   onUnreadCountChange: (count: number) => void
   requestedSupportRequestId: number | null
   onSupportRequestOpened: () => void
+  requestedCheckInChatId: number | null
+  onCheckInChatOpened: () => void
 }) {
   const [showRequestChats, setShowRequestChats] = useState(false)
+  const [showCheckInChats, setShowCheckInChats] = useState(false)
   const [conversations, setConversations] = useState<Conversation[]>([])
   const [selectedId, setSelectedId] = useState<number | null>(null)
   const [detail, setDetail] = useState<ConversationDetail | null>(null)
@@ -96,6 +118,9 @@ function MessagesView({
   useEffect(() => {
     if (requestedSupportRequestId !== null) setShowRequestChats(true)
   }, [requestedSupportRequestId])
+  useEffect(() => {
+    if (requestedCheckInChatId !== null) setShowCheckInChats(true)
+  }, [requestedCheckInChatId])
 
   async function loadConversations(signal?: AbortSignal) {
     const response = await fetch("/api/support/conversations", { signal })
@@ -383,6 +408,18 @@ function MessagesView({
         initialRequestId={requestedSupportRequestId}
         onInitialRequestOpened={onSupportRequestOpened}
         onBack={() => setShowRequestChats(false)}
+        onCheckInChats={() => { setShowRequestChats(false); setShowCheckInChats(true); }}
+      />
+    )
+  }
+  if (showCheckInChats) {
+    return (
+      <CheckInChatMessages
+        employee={employee}
+        initialCheckInId={requestedCheckInChatId}
+        onInitialCheckInOpened={onCheckInChatOpened}
+        onBack={() => setShowCheckInChats(false)}
+        onRequestChats={() => { setShowCheckInChats(false); setShowRequestChats(true); }}
       />
     )
   }
@@ -410,6 +447,15 @@ function MessagesView({
           type="button"
         >
           Pedidos de suporte
+        </button>
+        <button
+          className="rounded-xl border border-[#e5e5ee] bg-white px-4 py-2.5 text-xs font-extrabold text-[#5556d8]"
+          role="tab"
+          aria-selected="false"
+          onClick={() => setShowCheckInChats(true)}
+          type="button"
+        >
+          Check-ins
         </button>
       </div>
       {error && (
@@ -791,11 +837,13 @@ function SupportRequestMessages({
   initialRequestId,
   onInitialRequestOpened,
   onBack,
+  onCheckInChats,
 }: {
   employee: AuthenticatedEmployee
   initialRequestId: number | null
   onInitialRequestOpened: () => void
   onBack: () => void
+  onCheckInChats: () => void
 }) {
   const [conversations, setConversations] =
     useState<SupportRequestConversation[]>([])
@@ -977,6 +1025,15 @@ function SupportRequestMessages({
         >
           Pedidos de suporte
         </button>
+        <button
+          className="rounded-xl border border-[#e5e5ee] bg-white px-4 py-2.5 text-xs font-extrabold text-[#5556d8]"
+          role="tab"
+          aria-selected="false"
+          onClick={onCheckInChats}
+          type="button"
+        >
+          Check-ins
+        </button>
       </div>
       {error && (
         <p className="messages-page__error" role="alert">
@@ -1143,6 +1200,146 @@ function SupportRequestMessages({
             </p>
           </article>
         )}
+      </div>
+    </section>
+  )
+}
+
+function CheckInChatMessages({
+  employee,
+  initialCheckInId,
+  onInitialCheckInOpened,
+  onBack,
+  onRequestChats,
+}: {
+  employee: AuthenticatedEmployee
+  initialCheckInId: number | null
+  onInitialCheckInOpened: () => void
+  onBack: () => void
+  onRequestChats: () => void
+}) {
+  const [conversations, setConversations] = useState<CheckInChatConversation[]>([])
+  const [selectedId, setSelectedId] = useState<number | null>(initialCheckInId)
+  const [messages, setMessages] = useState<CheckInChatMessage[]>([])
+  const [draft, setDraft] = useState("")
+  const [loading, setLoading] = useState(true)
+  const [saving, setSaving] = useState(false)
+  const [error, setError] = useState("")
+  const historyRef = useRef<HTMLDivElement>(null)
+
+  async function loadConversations(signal?: AbortSignal) {
+    const response = await fetch("/api/check-ins/conversations", { signal })
+    const result = await response.json()
+    if (!response.ok) throw new Error(result.error ?? "Não foi possível carregar os chats dos check-ins.")
+    const rows = result.conversations as CheckInChatConversation[]
+    setConversations(rows)
+    setSelectedId((current) => current && rows.some((item) => item.id === current) ? current : rows[0]?.id ?? null)
+  }
+
+  async function loadMessages(checkInId: number, signal?: AbortSignal) {
+    const response = await fetch(`/api/check-ins/${checkInId}/messages`, { signal })
+    const result = await response.json()
+    if (!response.ok) throw new Error(result.error ?? "Não foi possível carregar o chat.")
+    setMessages(result.messages as CheckInChatMessage[])
+  }
+
+  useEffect(() => {
+    const controller = new AbortController()
+    setLoading(true)
+    loadConversations(controller.signal)
+      .then(() => {
+        if (initialCheckInId !== null) {
+          setSelectedId(initialCheckInId)
+          onInitialCheckInOpened()
+        }
+      })
+      .catch((loadError: unknown) => {
+        if (!(loadError instanceof DOMException && loadError.name === "AbortError"))
+          setError(loadError instanceof Error ? loadError.message : "Não foi possível carregar os chats dos check-ins.")
+      })
+      .finally(() => { if (!controller.signal.aborted) setLoading(false) })
+    return () => controller.abort()
+  }, [employee.id])
+
+  useEffect(() => {
+    if (selectedId === null) { setMessages([]); return }
+    let active = true
+    const refresh = async () => {
+      try {
+        const response = await fetch(`/api/check-ins/${selectedId}/messages`)
+        const result = await response.json()
+        if (!response.ok) throw new Error(result.error ?? "Não foi possível carregar o chat.")
+        if (active) setMessages(result.messages as CheckInChatMessage[])
+      } catch (loadError) {
+        if (active) setError(loadError instanceof Error ? loadError.message : "Não foi possível carregar o chat.")
+      }
+    }
+    void refresh()
+    const interval = window.setInterval(() => {
+      void refresh()
+      void loadConversations().catch(() => undefined)
+    }, 5000)
+    return () => { active = false; window.clearInterval(interval) }
+  }, [selectedId])
+
+  useEffect(() => {
+    const frame = window.requestAnimationFrame(() => {
+      const history = historyRef.current
+      if (history) history.scrollTo({ top: history.scrollHeight, behavior: "smooth" })
+    })
+    return () => window.cancelAnimationFrame(frame)
+  }, [messages.length])
+
+  async function sendMessage(event: FormEvent<HTMLFormElement>) {
+    event.preventDefault()
+    if (selectedId === null || !draft.trim()) return
+    setSaving(true)
+    setError("")
+    try {
+      const response = await fetch(`/api/check-ins/${selectedId}/messages`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ body: draft }),
+      })
+      const result = await response.json()
+      if (!response.ok) throw new Error(result.error ?? "Não foi possível enviar a mensagem.")
+      setDraft("")
+      await Promise.all([loadConversations(), loadMessages(selectedId)])
+    } catch (sendError) {
+      setError(sendError instanceof Error ? sendError.message : "Não foi possível enviar a mensagem.")
+    } finally { setSaving(false) }
+  }
+
+  const selected = conversations.find((item) => item.id === selectedId) ?? null
+  const historyMessages: MessageHistoryItem[] = messages.map((message) => ({ id: message.id, senderId: message.senderEmployeeId, senderName: message.senderName, body: message.body, sentAt: message.sentAt }))
+
+  return (
+    <section className="messages-page">
+      <div className="mb-4 flex flex-wrap gap-2" role="tablist" aria-label="Tipo de conversa">
+        <button className="rounded-xl border border-[#e5e5ee] bg-white px-4 py-2.5 text-xs font-extrabold text-[#5556d8]" role="tab" aria-selected="false" onClick={onBack} type="button">Problemas da jornada</button>
+        <button className="rounded-xl border border-[#e5e5ee] bg-white px-4 py-2.5 text-xs font-extrabold text-[#5556d8]" role="tab" aria-selected="false" onClick={onRequestChats} type="button">Pedidos de suporte</button>
+        <button className="rounded-xl bg-[#5556d8] px-4 py-2.5 text-xs font-extrabold text-white" role="tab" aria-selected="true" type="button">Check-ins</button>
+      </div>
+      {error && <p className="messages-page__error" role="alert">{error}</p>}
+      <div className="messages-layout">
+        <aside className="messages-inbox" aria-label="Conversas de check-in">
+          <div className="messages-inbox__heading"><strong>Chats de check-in</strong><span>{conversations.length} {conversations.length === 1 ? "conversa" : "conversas"}</span></div>
+          {loading ? <p className="messages-inbox__empty">Carregando conversas...</p> : conversations.length ? <div className="messages-thread-list">
+            {conversations.map((item) => {
+              const contactName = employee.isHrAdmin ? item.employeeName : "Equipe de RH"
+              return <button className={`messages-thread ${selectedId === item.id ? "messages-thread--active" : ""}`} key={item.id} onClick={() => setSelectedId(item.id)} type="button" aria-current={selectedId === item.id ? "true" : undefined}>
+                <MessagesAvatar employeeId={employee.isHrAdmin ? item.employeeId : null} name={contactName} />
+                <span className="messages-thread__body"><span className="messages-thread__top"><strong>{contactName}</strong><small>{formatDate(item.lastMessageAt)}</small></span><span className="messages-thread__subject">{item.taskTitle ?? "Check-in"}</span><span className="messages-thread__preview">{item.lastMessage}</span><span className="messages-thread__bottom"><span className="messages-status messages-status--open">Em acompanhamento</span><small>{employee.isHrAdmin ? item.employeeDepartment ?? "Funcionário" : "Onboarding"}</small></span></span>
+              </button>
+            })}
+          </div> : <p className="messages-inbox__empty">As conversas iniciadas pelo RH aparecerão aqui.</p>}
+        </aside>
+        {selected ? <article className="messages-case">
+          <header className="messages-case__header"><div className="messages-person"><MessagesAvatar employeeId={employee.isHrAdmin ? selected.employeeId : null} name={employee.isHrAdmin ? selected.employeeName : "Equipe de RH"} /><div><strong>{employee.isHrAdmin ? selected.employeeName : "Equipe de RH"}</strong><small>{selected.taskTitle ?? "Check-in"}</small></div></div><div className="messages-case__actions"><span className="messages-status messages-status--open">Em acompanhamento</span></div></header>
+          <section className="messages-case__context"><div><span className="messages-case__eyebrow">Contexto do check-in</span><h2>{selected.taskTitle ?? "Check-in"}</h2><div className="messages-case__meta"><span>{[selected.comment, selected.difficulties ? `Dificuldades: ${selected.difficulties}` : null, selected.supportRequest ? `Suporte pedido: ${selected.supportRequest}` : null].filter(Boolean).join("\n") || "A conversa foi iniciada pelo RH para acompanhar este check-in."}</span></div></div></section>
+          <MessageHistory historyRef={historyRef} messages={historyMessages} currentEmployeeId={employee.id} emptyMessage="Envie uma mensagem para iniciar a conversa sobre este check-in." />
+          <form className="messages-reply" onSubmit={sendMessage}><label htmlFor="check-in-chat-reply">Responder sobre este check-in</label><textarea id="check-in-chat-reply" maxLength={4000} value={draft} onChange={(event) => setDraft(event.target.value)} placeholder="Escreva uma mensagem..." /><div className="messages-reply__footer"><small>Conversa vinculada ao check-in</small><button disabled={saving || !draft.trim()} type="submit">{saving ? "Enviando..." : messages.length ? "Enviar mensagem" : "Iniciar chat"}</button></div></form>
+        </article> : <article className="messages-case messages-case--empty"><div className="messages-empty-icon"><Icon name="chat" size={23} /></div><h2>Escolha um chat de check-in</h2><p>As conversas iniciadas pelo RH ficam nesta caixa de entrada.</p></article>}
       </div>
     </section>
   )

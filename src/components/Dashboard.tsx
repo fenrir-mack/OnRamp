@@ -26,6 +26,7 @@ function Dashboard({ employee, onLogout }: { employee: AuthenticatedEmployee; on
   const [profilePhoto, setProfilePhoto] = useState(() => localStorage.getItem(`onramp-profile-photo-${employee.id}`) ?? "");
   const [mobileMenu, setMobileMenu] = useState(false);
   const [requestedSupportRequestId, setRequestedSupportRequestId] = useState<number | null>(null);
+  const [requestedCheckInChatId, setRequestedCheckInChatId] = useState<number | null>(null);
   const [unreadSupportCount, setUnreadSupportCount] = useState(0);
   const [overdueTaskCount, setOverdueTaskCount] = useState(0);
   const [preEntryOverdueCount, setPreEntryOverdueCount] = useState(0);
@@ -37,6 +38,11 @@ function Dashboard({ employee, onLogout }: { employee: AuthenticatedEmployee; on
   }, []);
   const openSupportRequestChat = useCallback((requestId: number) => {
     setRequestedSupportRequestId(requestId);
+    setActiveNav("Mensagens de suporte");
+    setMobileMenu(false);
+  }, []);
+  const openCheckInChat = useCallback((checkInId: number) => {
+    setRequestedCheckInChatId(checkInId);
     setActiveNav("Mensagens de suporte");
     setMobileMenu(false);
   }, []);
@@ -256,7 +262,7 @@ function Dashboard({ employee, onLogout }: { employee: AuthenticatedEmployee; on
       <aside className={`sidebar ${mobileMenu ? "sidebar--open" : ""}`}>
         <div className="px-7 py-7"><Brand /></div>
         <nav className="mt-4 space-y-1 px-4">
-          <p className="px-3 pb-3 text-[11px] font-extrabold uppercase tracking-[0.14em] text-[#a0a2b4]">{employee.isHrAdmin ? "Administração" : "Menu principal"}</p>
+          {employee.isHrAdmin && <p className="px-3 pb-3 text-[11px] font-extrabold uppercase tracking-[0.14em] text-[#a0a2b4]">Administração</p>}
           {navItems.map((item) => (
             <button
               className={`sidebar__nav-item ${activeNav === item.label ? "sidebar__nav-item--active" : ""}`}
@@ -314,11 +320,11 @@ function Dashboard({ employee, onLogout }: { employee: AuthenticatedEmployee; on
           {activeNav === "Meu perfil" ? (
             <ProfileView employee={employee} photo={profilePhoto} onPhotoChange={setProfilePhoto} />
           ) : activeNav === "Mensagens de suporte" ? (
-            <MessagesView employee={employee} onUnreadCountChange={setUnreadSupportCount} requestedSupportRequestId={requestedSupportRequestId} onSupportRequestOpened={() => setRequestedSupportRequestId(null)} />
+            <MessagesView employee={employee} onUnreadCountChange={setUnreadSupportCount} requestedSupportRequestId={requestedSupportRequestId} onSupportRequestOpened={() => setRequestedSupportRequestId(null)} requestedCheckInChatId={requestedCheckInChatId} onCheckInChatOpened={() => setRequestedCheckInChatId(null)} />
           ) : employee.isHrAdmin && activeNav === "Tarefas atrasadas" ? (
             <OverdueTasksView />
           ) : employee.isHrAdmin && activeNav === "Acompanhamento" ? (
-            <OnboardingSupportView onOpenChat={openSupportRequestChat} />
+            <OnboardingSupportView onOpenChat={openCheckInChat} />
           ) : activeNav === "Novas admissões" && canManagePreparations ? (
             <PreparationView />
           ) : !employee.isHrAdmin && activeNav === "Pedir suporte" ? (

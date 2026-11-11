@@ -99,6 +99,18 @@ O setup local cria estas contas:
 
 As senhas são armazenadas como hashes scrypt. Essas contas são apenas para desenvolvimento local; não as use em produção. A conta `fenrir3@gmail.com` tem acesso ao RH para gerenciar pessoas e jornadas. As contas 1 e 2 não têm permissão para acessar o espaço do RH.
 
+### Cenário de demonstração
+
+O cenário local inclui três novas pessoas fictícias, planos e tarefas em diferentes estados, preparação pré-entrada, biblioteca, treinamento, check-ins, feedback e solicitações de suporte. Nenhuma conversa ou mensagem de chat é criada. As contas abaixo entram como colaboradoras; use `fenrir3@gmail.com` para explorar o espaço do RH:
+
+| E-mail | Senha |
+| --- | --- |
+| `demo.ana@onramp.local` | `fenrir1` |
+| `demo.rafael@onramp.local` | `fenrir1` |
+| `demo.camila@onramp.local` | `fenrir1` |
+
+Atualize ou recrie o cenário com `npm run db:demo`. Para remover os registros fictícios e as três contas, rode `npm run db:demo:clear`. Esses comandos usam somente `.env.local`.
+
 ## Arquivos enviados
 
 Os arquivos enviados pelo RH e as fotos de perfil são armazenados localmente em `storage/files/`, fora do PostgreSQL, por padrão. Para usar Azure Blob Storage, crie um container privado e configure `ONRAMP_FILE_STORAGE_PROVIDER=azure`, `AZURE_STORAGE_ACCOUNT_NAME` e `AZURE_STORAGE_CONTAINER_NAME`. O backend usa `DefaultAzureCredential`: localmente, entre no Azure CLI com `az login`; no App Service, habilite uma identidade gerenciada e atribua a função **Storage Blob Data Contributor** ao container. Downloads e fotos de perfil passam por rotas autenticadas do OnRamp; não torne o container público e não coloque chaves de storage no código. O banco guarda metadados e a chave privada do objeto.
