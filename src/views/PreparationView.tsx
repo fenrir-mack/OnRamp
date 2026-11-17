@@ -2,7 +2,7 @@ import { useEffect, useState } from "react";
 import type { FormEvent } from "react";
 import EmployeeAvatar from "../components/EmployeeAvatar";
 
-type PreparationIssue = { id: number; description: string; status: "open" | "in_review" | "resolved"; resolutionNote: string | null; createdAt: string };
+type PreparationIssue = { id: number; description: string };
 type PreparationHistoryEntry = { id: number; actorName: string; action: string; previousValue: string | null; newValue: string | null; comment: string | null; createdAt: string };
 type PreparationTask = {
   id: number; employeeId: number; employeeName: string; title: string; description: string; category: string;
@@ -78,19 +78,6 @@ function PreparationView() {
       setNotice("Link de rastreio salvo.");
     } catch (saveError) { setError(saveError instanceof Error ? saveError.message : "Não foi possível salvar o rastreio."); }
     finally { setSavingId(null); }
-  }
-
-  async function updateIssue(issue: PreparationIssue, status: "in_review" | "resolved") {
-    setError(""); setNotice("");
-    try {
-      const resolutionNote = status === "resolved" ? window.prompt("Como o problema foi resolvido?", issue.resolutionNote ?? "") : issue.resolutionNote ?? "";
-      if (status === "resolved" && resolutionNote === null) return;
-      const response = await fetch(`/api/preparation/issues/${issue.id}`, { method: "PATCH", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ status, resolutionNote }) });
-      const result = await response.json();
-      if (!response.ok) throw new Error(result.error ?? "Não foi possível atualizar o problema.");
-      setTasks((current) => current.map((task) => ({ ...task, issues: task.issues.map((item) => item.id === issue.id ? { ...item, ...result } : item), openIssueCount: task.issues.filter((item) => item.id !== issue.id && item.status !== "resolved").length + (status === "resolved" ? 0 : 1) })));
-      setNotice("Acompanhamento do problema atualizado.");
-    } catch (saveError) { setError(saveError instanceof Error ? saveError.message : "Não foi possível atualizar o problema."); }
   }
 
   const today = new Date().toISOString().slice(0, 10);
@@ -179,7 +166,7 @@ function PreparationView() {
                 <div className="mt-3 space-y-3">{task.description && <p className="leading-5">{task.description}</p>}
                   {task.category === "Equipamento" && <form className="flex flex-col gap-2 rounded-xl bg-[#fafafe] p-3 sm:flex-row sm:items-end" onSubmit={(event) => void saveTrackingLink(event, task)}><label className="min-w-0 flex-1 font-bold">Link de rastreio<input className="mt-1 w-full rounded-lg border border-[#e3e3ed] bg-white px-2.5 py-2 text-xs font-normal" defaultValue={task.trackingUrl ?? ""} name="trackingUrl" type="url" maxLength={1000} /></label><button className="self-end rounded-lg border border-[#e3e3ed] px-3 py-2 font-bold text-[#5556d8] hover:bg-white" disabled={savingId === task.id} type="submit">Salvar link</button></form>}
                   {task.category === "Equipamento" && task.trackingUrl && <a className="font-bold text-[#5556d8] underline" href={task.trackingUrl} rel="noreferrer" target="_blank">Abrir link de rastreio</a>}
-                  {task.issues.length > 0 && <div className="space-y-2"><strong className="text-[#55576d]">Problemas sinalizados ({task.openIssueCount})</strong>{task.issues.map((issue) => <div className="rounded-lg bg-[#fafafe] p-3" key={issue.id}><p className="text-[#45475d]">{issue.description}</p><div className="mt-2 flex flex-wrap items-center gap-2"><span>{issue.status === "resolved" ? `Resolvido: ${issue.resolutionNote ?? ""}` : issue.status === "in_review" ? "Em acompanhamento" : "Aberto"}</span>{issue.status !== "resolved" && <><button className="font-bold text-[#5556d8]" onClick={() => void updateIssue(issue, "in_review")} type="button">Acompanhar</button><button className="font-bold text-emerald-700" onClick={() => void updateIssue(issue, "resolved")} type="button">Marcar resolvido</button></>}</div></div>)}</div>}
+                  {task.issues.length > 0 && <div className="space-y-2"><strong className="text-[#55576d]">Problemas sinalizados ({task.openIssueCount})</strong>{task.issues.map((issue) => <div className="rounded-lg bg-[#fafafe] p-3" key={issue.id}><p className="text-[#45475d]">{issue.description}</p></div>)}</div>}
                 </div>
               </details>
               <details className="basis-full rounded-lg border-t border-[#f0f0f5] pt-2 text-xs text-[#777a91]"><summary className="w-fit cursor-pointer font-bold text-[#5556d8]">Ver histórico de atualizações ({task.history.length})</summary>{task.history.length ? <div className="mt-2 space-y-2">{task.history.map((entry) => <div className="rounded-lg bg-[#fafafe] px-3 py-2" key={entry.id}><p>{formatDate(entry.createdAt)} · {entry.actorName} · {historyActionLabel(entry.action)}{historyValue(entry) ? `: ${historyValue(entry)}` : ""}</p>{entry.comment && <p className="mt-1 whitespace-pre-wrap text-[#55576d]">{entry.comment}</p>}</div>)}</div> : <p className="mt-2">Nenhuma atualização registrada ainda.</p>}</details>

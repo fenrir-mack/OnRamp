@@ -6,6 +6,12 @@ import { pool } from "./db.js";
 import { checkFileStorage, getStoredFileContentType, readStoredFile, removeStoredFile, storeFile } from "./file-storage.js";
 
 const scrypt = promisify(scryptCallback);
+const passwordScryptOptions = {
+  N: 2 ** 14,
+  r: 8,
+  p: 5,
+  maxmem: 32 * 1024 * 1024,
+};
 const sessionCookieName = "onramp_session";
 const sessionDurationMs = 12 * 60 * 60 * 1000;
 const rememberedSessionDurationMs = 30 * 24 * 60 * 60 * 1000;
@@ -1462,8 +1468,8 @@ async function saveEmployeePreparationAccess(client, employeeId, departmentIds, 
 
 async function hashPassword(password) {
   const salt = randomBytes(16).toString("hex");
-  const hash = await scrypt(password, salt, 64);
-  return `scrypt$${salt}$${hash.toString("hex")}`;
+  const hash = await scrypt(password, salt, 64, passwordScryptOptions);
+  return `scrypt$${passwordScryptOptions.N}$${passwordScryptOptions.r}$${passwordScryptOptions.p}$${salt}$${hash.toString("hex")}`;
 }
 
 function validatePlanTasks(tasks) {
@@ -2552,9 +2558,17 @@ app.post("/api/auth/login", async (request, response) => {
     const employee = result.rows[0];
     let passwordMatches = false;
     if (employee?.password_hash) {
-      const [algorithm, salt, expectedHex] = employee.password_hash.split("$");
-      if (algorithm === "scrypt" && salt && /^[a-f0-9]{128}$/i.test(expectedHex ?? "")) {
-        const actual = await scrypt(password, salt, 64);
+      const parts = employee.password_hash.split("$");
+      const isLegacyHash = parts.length === 3 && parts[0] === "scrypt";
+      const isCurrentHash = parts.length === 6 && parts[0] === "scrypt" &&
+        Number(parts[1]) === passwordScryptOptions.N && Number(parts[2]) === passwordScryptOptions.r &&
+        Number(parts[3]) === passwordScryptOptions.p;
+      const salt = isLegacyHash ? parts[1] : isCurrentHash ? parts[4] : "";
+      const expectedHex = isLegacyHash ? parts[2] : isCurrentHash ? parts[5] : "";
+      if ((isLegacyHash || isCurrentHash) && /^[a-f0-9]{32}$/i.test(salt) && /^[a-f0-9]{128}$/i.test(expectedHex)) {
+        const actual = isLegacyHash
+          ? await scrypt(password, salt, 64)
+          : await scrypt(password, salt, 64, passwordScryptOptions);
         passwordMatches = timingSafeEqual(actual, Buffer.from(expectedHex, "hex"));
       }
     }

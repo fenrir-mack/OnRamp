@@ -2,6 +2,10 @@ import pg from "pg";
 
 const { Pool } = pg;
 
+if (process.env.NODE_ENV === "production" && process.env.PGSSL !== "true") {
+  throw new Error("PGSSL=true is required in production to encrypt PostgreSQL connections.");
+}
+
 export const pool = new Pool({
   host: process.env.PGHOST ?? "127.0.0.1",
   port: Number(process.env.PGPORT ?? 5432),
