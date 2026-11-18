@@ -1472,6 +1472,22 @@ async function hashPassword(password) {
   return `scrypt$${passwordScryptOptions.N}$${passwordScryptOptions.r}$${passwordScryptOptions.p}$${salt}$${hash.toString("hex")}`;
 }
 
+async function verifyPassword(password, passwordHash) {
+  if (!passwordHash) return false;
+  const parts = passwordHash.split("$");
+  const isLegacyHash = parts.length === 3 && parts[0] === "scrypt";
+  const isCurrentHash = parts.length === 6 && parts[0] === "scrypt" &&
+    Number(parts[1]) === passwordScryptOptions.N && Number(parts[2]) === passwordScryptOptions.r &&
+    Number(parts[3]) === passwordScryptOptions.p;
+  const salt = isLegacyHash ? parts[1] : isCurrentHash ? parts[4] : "";
+  const expectedHex = isLegacyHash ? parts[2] : isCurrentHash ? parts[5] : "";
+  if (!(isLegacyHash || isCurrentHash) || !/^[a-f0-9]{32}$/i.test(salt) || !/^[a-f0-9]{128}$/i.test(expectedHex)) return false;
+  const actual = isLegacyHash
+    ? await scrypt(password, salt, 64)
+    : await scrypt(password, salt, 64, passwordScryptOptions);
+  return timingSafeEqual(actual, Buffer.from(expectedHex, "hex"));
+}
+
 function validatePlanTasks(tasks) {
   if (!Array.isArray(tasks) || tasks.length > 200) return "O plano deve conter até 200 tarefas.";
   const validTypes = new Set(["task", "preparation", "training", "checkin"]);
@@ -2556,22 +2572,7 @@ app.post("/api/auth/login", async (request, response) => {
       LIMIT 1
     `, [email]);
     const employee = result.rows[0];
-    let passwordMatches = false;
-    if (employee?.password_hash) {
-      const parts = employee.password_hash.split("$");
-      const isLegacyHash = parts.length === 3 && parts[0] === "scrypt";
-      const isCurrentHash = parts.length === 6 && parts[0] === "scrypt" &&
-        Number(parts[1]) === passwordScryptOptions.N && Number(parts[2]) === passwordScryptOptions.r &&
-        Number(parts[3]) === passwordScryptOptions.p;
-      const salt = isLegacyHash ? parts[1] : isCurrentHash ? parts[4] : "";
-      const expectedHex = isLegacyHash ? parts[2] : isCurrentHash ? parts[5] : "";
-      if ((isLegacyHash || isCurrentHash) && /^[a-f0-9]{32}$/i.test(salt) && /^[a-f0-9]{128}$/i.test(expectedHex)) {
-        const actual = isLegacyHash
-          ? await scrypt(password, salt, 64)
-          : await scrypt(password, salt, 64, passwordScryptOptions);
-        passwordMatches = timingSafeEqual(actual, Buffer.from(expectedHex, "hex"));
-      }
-    }
+    const passwordMatches = await verifyPassword(password, employee?.password_hash);
     if (!employee || !passwordMatches) {
       return response.status(401).json({ error: "E-mail ou senha incorretos." });
     }
@@ -2619,6 +2620,43 @@ app.delete("/api/auth/session", async (request, response) => {
   }
 });
 
+app.put("/api/me/password", requireAuthenticated, async (request, response) => {
+  const currentPassword = typeof request.body?.currentPassword === "string" ? request.body.currentPassword : "";
+  const newPassword = typeof request.body?.newPassword === "string" ? request.body.newPassword : "";
+  if (!currentPassword || currentPassword.length > 1024 || !newPassword || newPassword.length < 8 || newPassword.length > 1024) {
+    return response.status(400).json({ error: "A nova senha deve ter entre 8 e 1.024 caracteres." });
+  }
+  if (currentPassword === newPassword) {
+    return response.status(400).json({ error: "Escolha uma senha diferente da atual." });
+  }
+
+  const token = getCookie(request, sessionCookieName);
+  if (!token || token.length > 200) return response.status(401).json({ error: "Sua sessão expirou. Entre novamente." });
+  const currentTokenHash = createHash("sha256").update(token).digest("hex");
+  const employeeId = request.authenticatedEmployee.employee_id;
+  const client = await pool.connect();
+  try {
+    await client.query("BEGIN");
+    const account = await client.query("SELECT password_hash FROM public.employees WHERE employee_id = $1 FOR UPDATE", [employeeId]);
+    if (!account.rowCount || !(await verifyPassword(currentPassword, account.rows[0].password_hash))) {
+      await client.query("ROLLBACK");
+      return response.status(400).json({ error: "A senha atual está incorreta." });
+    }
+
+    const passwordHash = await hashPassword(newPassword);
+    await client.query("UPDATE public.employees SET password_hash = $2 WHERE employee_id = $1", [employeeId, passwordHash]);
+    await client.query("DELETE FROM public.auth_sessions WHERE employee_id = $1 AND token_hash <> $2", [employeeId, currentTokenHash]);
+    await client.query("COMMIT");
+    return response.json({ message: "Senha atualizada. As outras sessões foram encerradas." });
+  } catch (error) {
+    await client.query("ROLLBACK").catch(() => undefined);
+    console.error("Password update failed:", error.message);
+    return response.status(500).json({ error: "Não foi possível atualizar sua senha agora. Tente novamente." });
+  } finally {
+    client.release();
+  }
+});
+
 app.get("/api/health", async (_request, response) => {
   try {
     const result = await pool.query("SELECT current_database() AS database");
@@ -2651,7 +2689,7 @@ app.get("/api/me/profile-photo", requireAuthenticated, async (request, response)
     response.type(mimeType);
     return response.send(contents);
   } catch (error) {
-    if (error.code === "ENOENT" || error.code === "BlobNotFound") return response.status(404).json({ error: "Foto de perfil não encontrada." });
+    if (error.code === "ENOENT" || error.code === "BlobNotFound") return response.status(204).end();
     console.error("Could not load profile photo:", error.message);
     return response.status(500).json({ error: "Não foi possível carregar a foto de perfil." });
   }

@@ -29,6 +29,13 @@ export default function ProfileView({ employee, photo: savedPhoto, onPhotoChange
   const [cropDisplaySize, setCropDisplaySize] = useState(cropViewportSize);
   const dragStart = useRef<{ pointerX: number; pointerY: number; centerX: number; centerY: number } | null>(null);
 
+  const accountDetails = [
+    { label: "Nome completo", value: employee.name, icon: "user" as const },
+    { label: "E-mail corporativo", value: employee.email, icon: "mail" as const },
+    { label: "Cargo", value: employee.jobTitle || "Não informado", icon: "briefcase" as const },
+    { label: "Área", value: employee.department || "Não informada", icon: "people" as const },
+  ];
+
   useEffect(() => { setPhoto(savedPhoto); setPhotoUnavailable(false); }, [savedPhoto]);
 
   function choosePhoto(event: ChangeEvent<HTMLInputElement>) {
@@ -140,18 +147,10 @@ export default function ProfileView({ employee, photo: savedPhoto, onPhotoChange
     setCropCenter({ x: Math.max(cropSize / 2, Math.min(cropImageSize.width - cropSize / 2, centerX)), y: Math.max(cropSize / 2, Math.min(cropImageSize.height - cropSize / 2, centerY)) });
   }
 
-  const accountDetails = [
-    { label: "Nome completo", value: employee.name, icon: "user" as const },
-    { label: "E-mail corporativo", value: employee.email, icon: "mail" as const },
-    { label: "Cargo", value: employee.jobTitle || "Não informado", icon: "briefcase" as const },
-    { label: "Área", value: employee.department || "Não informada", icon: "people" as const },
-  ];
-
   return (
     <div className="profile-page">
       {!readOnly && <div className="profile-page__heading">
         <div>
-          <p className="eyebrow">Sua conta</p>
           <h1>Meu perfil</h1>
           <p>Confira seus dados e personalize sua foto de perfil.</p>
         </div>

@@ -73,6 +73,13 @@ function EmployeeJourneyView({ resetVersion, employeeId, onOverdueCountChange }:
     return tracked.length ? Math.round((tracked.filter((task) => task.completed).length / tracked.length) * 100) : 0;
   };
   const firstIncomplete = stages.find(({ code }) => stageProgress(code) < 100)?.code ?? null;
+  const currentStage = stages.find(({ code }) => code === firstIncomplete) ?? null;
+  const completedStageCount = stages.filter((item) => {
+    const stageTasks = tasksByStage.get(item.code) ?? [];
+    return stageTasks.length > 0 && stageProgress(item.code) === 100;
+  }).length;
+  const pendingTaskCount = plan.tasks.filter((task) => !task.completed && task.status !== "cancelled" && task.status !== "not_applicable").length;
+  const overdueTaskCount = plan.tasks.filter((task) => task.overdue && !task.completed).length;
   const stage = stages.find(({ code }) => code === selectedCode) ?? null;
   const tasks = stage ? tasksByStage.get(stage.code) ?? [] : [];
   const categorySortedTasks = useMemo(() => {
@@ -159,7 +166,7 @@ function EmployeeJourneyView({ resetVersion, employeeId, onOverdueCountChange }:
     finally { setSaving(false); }
   }
 
-  if (loading) return <section><p className="eyebrow">Seu onboarding</p><h1 className="mt-1 text-3xl font-extrabold tracking-tight">Minha jornada</h1><p className="mt-6 text-sm text-[#777a91]">Carregando suas etapas e atividades...</p></section>;
+  if (loading) return <section><h1 className="text-3xl font-extrabold tracking-tight">Minha jornada</h1></section>;
 
   if (selectedOwner) return <section className="people-directory">
     <button className="people-back-button" onClick={() => setSelectedOwner(null)} type="button"><Icon name="chevron" size={15} /> Voltar para as tarefas</button>
@@ -190,10 +197,27 @@ function EmployeeJourneyView({ resetVersion, employeeId, onOverdueCountChange }:
     </section>;
   }
 
-  return <section><p className="eyebrow">Seu onboarding</p><h1 className="mt-1 text-3xl font-extrabold tracking-tight">Minha jornada</h1><p className="mt-2 text-[#777a91]">Acompanhe o progresso das atividades e os materiais da sua jornada.</p>
+  return <section className="journey-overview-page">
+    <div className="journey-overview-page__heading"><div><h1 className="text-3xl font-extrabold tracking-tight">Minha jornada</h1><p className="mt-2 text-[#777a91]">Acompanhe cada etapa e veja o que vem pela frente.</p></div></div>
     {error && <p className="mt-4 rounded-xl bg-red-50 p-3 text-sm text-red-700" role="alert">{error}</p>}
     {!plan.configured && <p className="mt-5 rounded-xl border border-[#e8e8f0] bg-white p-4 text-sm text-[#777a91]">O RH ainda não configurou seu padrão de onboarding. As atividades aparecerão aqui quando estiver pronto.</p>}
-    <div className="mt-8 max-w-4xl space-y-4">{stages.map((item, index) => { const stageTasks = tasksByStage.get(item.code) ?? []; const overdueCount = stageTasks.filter((task) => task.overdue).length; const progress = stageProgress(item.code); const done = stageTasks.length > 0 && progress === 100; return <button className={`journey-stage-card ${firstIncomplete === item.code ? "journey-stage-card--current" : ""}`} key={item.code} onClick={() => setSelectedCode(item.code)} type="button"><div className={`journey-stage__number ${done ? "bg-[#e6f7ef] text-[#239766]" : ""}`}>{done ? <Icon name="check" size={17} /> : index + 1}</div><div className="min-w-0 flex-1 text-left"><h2 className="font-extrabold">{item.name}</h2><p className="mt-1 text-sm text-[#81849a]">{item.description}</p></div><div className="hidden text-right sm:block">{overdueCount > 0 && <span className="mb-1 inline-flex rounded-full bg-red-50 px-2 py-1 text-[10px] font-extrabold text-red-700">{overdueCount} {overdueCount === 1 ? "atrasada" : "atrasadas"}</span>}<strong className="block text-sm text-[#5556d8]">{progress}%</strong><small className="text-[10px] text-[#9698aa]">{stageTasks.length} {stageTasks.length === 1 ? "tarefa" : "tarefas"}</small></div><Icon name="chevron" size={18} /></button>; })}{stages.length === 0 && <p className="rounded-xl bg-white p-5 text-sm text-[#85879a]">Não há etapas disponíveis.</p>}</div>
+    {plan.configured && stages.length > 0 && <div className="journey-overview">
+      <div className="journey-overview__main">
+        <span className="journey-overview__eyebrow">{currentStage ? `ETAPA ${stages.findIndex((item) => item.code === currentStage.code) + 1} DE ${stages.length} · EM ANDAMENTO` : "JORNADA FINALIZADA"}</span>
+        <h2>{currentStage ? currentStage.name : "Parabéns, você concluiu sua jornada!"}</h2>
+        <p>{currentStage ? currentStage.description : "Todas as etapas da sua jornada foram concluídas."}</p>
+        <div className="journey-overview__progress-copy"><span>{currentStage ? "Progresso da etapa atual" : "Progresso da jornada"}</span><strong>{currentStage ? stageProgress(currentStage.code) : 100}%</strong></div>
+        <div className="journey-overview__progress-track" role="progressbar" aria-label="Progresso da etapa atual" aria-valuemin={0} aria-valuemax={100} aria-valuenow={currentStage ? stageProgress(currentStage.code) : 100}><span style={{ width: `${currentStage ? stageProgress(currentStage.code) : 100}%` }} /></div>
+        {currentStage && <button className="journey-overview__action" onClick={() => setSelectedCode(currentStage.code)} type="button">Ver atividades da etapa <Icon name="arrow" size={16} /></button>}
+      </div>
+      <div className="journey-overview__stats" aria-label="Resumo da jornada">
+        <div className="journey-overview__stat"><strong>{completedStageCount}<span>/{stages.length}</span></strong><small>etapas concluídas</small></div>
+        <div className="journey-overview__stat"><strong>{pendingTaskCount}</strong><small>atividades pendentes</small></div>
+        <div className={`journey-overview__stat ${overdueTaskCount > 0 ? "journey-overview__stat--warning" : ""}`}><strong>{overdueTaskCount}</strong><small>{overdueTaskCount === 1 ? "atividade atrasada" : "atividades atrasadas"}</small></div>
+      </div>
+    </div>}
+    <div className="journey-overview__stages-heading"><h2>Etapas da jornada</h2>{stages.length > 0 && <span>{stages.length} {stages.length === 1 ? "etapa" : "etapas"}</span>}</div>
+    <div className="journey-stage-grid">{stages.map((item, index) => { const stageTasks = tasksByStage.get(item.code) ?? []; const overdueCount = stageTasks.filter((task) => task.overdue && !task.completed).length; const progress = stageProgress(item.code); const done = stageTasks.length > 0 && progress === 100; const current = !done && firstIncomplete === item.code; return <button className={`journey-stage-card ${current ? "journey-stage-card--current" : ""} ${done ? "journey-stage-card--done" : ""}`} key={item.code} onClick={() => setSelectedCode(item.code)} type="button"><div className="journey-stage-card__top"><div className={`journey-stage__number ${done ? "journey-stage__number--done" : current ? "journey-stage__number--current" : ""}`}>{done ? <Icon name="check" size={17} /> : index + 1}</div><span className={`journey-stage-card__status ${done ? "journey-stage-card__status--done" : current ? "journey-stage-card__status--current" : ""}`}>{done ? "Concluída" : current ? "Etapa atual" : "A seguir"}</span></div><div className="journey-stage-card__copy"><h3>{item.name}</h3><p>{item.description}</p></div><div className="journey-stage-card__progress-copy"><span>{stageTasks.length} {stageTasks.length === 1 ? "atividade" : "atividades"}{overdueCount > 0 && <em>{overdueCount} atrasada{overdueCount === 1 ? "" : "s"}</em>}</span><strong>{progress}%</strong></div><div className="journey-stage-card__progress-track" role="progressbar" aria-label={`Progresso de ${item.name}`} aria-valuemin={0} aria-valuemax={100} aria-valuenow={progress}><span className={done ? "journey-stage-card__progress-fill--done" : ""} style={{ width: `${progress}%` }} /></div><span className="journey-stage-card__link">Ver etapa <Icon name="chevron" size={15} /></span></button>; })}{stages.length === 0 && <p className="rounded-xl bg-white p-5 text-sm text-[#85879a]">Não há etapas disponíveis.</p>}</div>
   </section>;
 }
 

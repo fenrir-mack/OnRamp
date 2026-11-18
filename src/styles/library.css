@@ -101,7 +101,7 @@
 .content-filter__pill--active { border-color: #5b5ce2; background: #5b5ce2; color: white; }
 
 /* Content library page */
-.library-page { max-width: 1100px; margin: 0 auto; }
+.library-page { max-width: none; margin: 0; }
 .library-page__header { display: flex; align-items: flex-end; justify-content: space-between; gap: 24px; }
 .library-page__title { margin-top: 7px; color: #20223a; font-size: clamp(27px, 3vw, 34px); font-weight: 800; letter-spacing: -0.045em; line-height: 1.15; }
 .library-page__intro { margin-top: 10px; color: #777a91; font-size: 14px; line-height: 1.65; }

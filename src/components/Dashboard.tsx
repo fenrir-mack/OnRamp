@@ -7,6 +7,7 @@ import JourneyView from "../views/EmployeeJourneyView";
 import PeopleView from "../views/PeopleView";
 import HrPlansView from "../views/HrPlansView";
 import ProfileView from "../views/ProfileView";
+import SettingsView from "../views/SettingsView";
 import MessagesView from "../views/MessagesView";
 import OverdueTasksView from "../views/OverdueTasksView";
 import SupportRequestView from "../views/SupportRequestView";
@@ -136,7 +137,7 @@ function Dashboard({ employee, onLogout }: { employee: AuthenticatedEmployee; on
     const cachedPhotoKey = `onramp-profile-photo-${employee.id}`;
     fetch("/api/me/profile-photo")
       .then(async (response) => {
-        if (response.status === 404) {
+        if (response.status === 204 || response.status === 404) {
           if (!cancelled) {
             localStorage.removeItem(cachedPhotoKey);
             setProfilePhoto("");
@@ -292,7 +293,7 @@ function Dashboard({ employee, onLogout }: { employee: AuthenticatedEmployee; on
           ))}
         </nav>
         <div className="mt-auto px-4 pb-5">
-          {!employee.isHrAdmin && <button onClick={() => setActiveNav("Meu perfil")} className="sidebar__nav-item"><Icon name="settings" size={20} /> Configurações</button>}
+          {!employee.isHrAdmin && <button onClick={() => { setActiveNav("Configurações"); setMobileMenu(false); }} className={`sidebar__nav-item ${activeNav === "Configurações" ? "sidebar__nav-item--active" : ""}`}><Icon name="settings" size={20} /> Configurações</button>}
           <button onClick={onLogout} className="sidebar__nav-item"><Icon name="logout" size={20} /> Sair da conta</button>
         </div>
       </aside>
@@ -326,6 +327,8 @@ function Dashboard({ employee, onLogout }: { employee: AuthenticatedEmployee; on
         <div className={`mx-auto w-full ${activeNav === "Mensagens de suporte" ? "max-w-none p-3 sm:p-4 lg:p-5" : "max-w-[1320px] p-5 sm:p-8 lg:p-10"}`}>
           {activeNav === "Meu perfil" ? (
             <ProfileView employee={employee} photo={profilePhoto} onPhotoChange={setProfilePhoto} />
+          ) : activeNav === "Configurações" ? (
+            <SettingsView />
           ) : activeNav === "Mensagens de suporte" ? (
             <MessagesView employee={employee} onUnreadCountChange={setUnreadSupportCount} requestedSupportRequestId={requestedSupportRequestId} onSupportRequestOpened={() => setRequestedSupportRequestId(null)} requestedCheckInChatId={requestedCheckInChatId} onCheckInChatOpened={() => setRequestedCheckInChatId(null)} />
           ) : employee.isHrAdmin && activeNav === "Tarefas atrasadas" ? (

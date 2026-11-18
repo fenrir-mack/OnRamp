@@ -36,7 +36,14 @@ WHERE name LIKE 'DEMO |%'
      'Equipe responsável por sistemas, equipamentos e acessos.',
      'Equipe de apoio à contratação e à pré-entrada.',
      'Equipe de Pessoas & Cultura responsável por desenvolvimento e acompanhamento.',
-     'Equipe financeira responsável por planejamento e operações.'
+     'Equipe financeira responsável por planejamento e operações.',
+     'Equipe que pesquisa necessidades, valida ideias e desenha experiências digitais.',
+     'Equipe que constrói e mantém plataformas, ferramentas e sistemas internos.',
+     'Equipe que desenvolve e mantém os produtos e serviços digitais da empresa.',
+     'Equipe que mantém a infraestrutura, os acessos e a segurança dos sistemas.',
+     'Equipe que revisa contratos e conformidade nas contratações.',
+     'Equipe que cuida da integração, do desenvolvimento e da experiência das pessoas.',
+     'Equipe que organiza orçamento, pagamentos e processos financeiros.'
    );
 
 DELETE FROM public.check_ins WHERE employee_id IN (SELECT employee_id FROM demo_employee_ids);

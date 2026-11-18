@@ -33,7 +33,6 @@ function ContentView({ query, setQuery, resources, filtered, status }: { query: 
     <section className="library-page">
       <header className="library-page__header">
         <div>
-          <p className="eyebrow">Central de informações</p>
           <h1 className="library-page__title">Conteúdos para sua jornada</h1>
           <p className="library-page__intro">Encontre orientações, documentos e pessoas responsáveis por cada assunto.</p>
         </div>
@@ -42,7 +41,7 @@ function ContentView({ query, setQuery, resources, filtered, status }: { query: 
 
       <section className="library-section" aria-labelledby="library-topics-title">
         <div className="library-section__heading">
-          <div><p className="eyebrow">Navegue pela biblioteca</p><h2 id="library-topics-title">Explore por assunto</h2></div>
+          <div><h2 id="library-topics-title">Explore por assunto</h2></div>
           {activeCategory !== "Todos" && <button className="library-section__reset" onClick={() => setActiveCategory("Todos")} type="button">Ver todos os assuntos</button>}
         </div>
         <div className="library-topics">
@@ -68,7 +67,7 @@ function ContentView({ query, setQuery, resources, filtered, status }: { query: 
 
       <section className="library-section library-section--resources" aria-labelledby="library-resources-title">
         <div className="library-section__heading library-section__heading--resources">
-          <div><p className="eyebrow">Materiais de apoio</p><h2 id="library-resources-title">Biblioteca de conteúdos</h2></div>
+          <div><h2 id="library-resources-title">Biblioteca de conteúdos</h2></div>
           <span className="library-section__result-count">{visibleResources.length} {visibleResources.length === 1 ? "material" : "materiais"}</span>
         </div>
 
@@ -98,7 +97,7 @@ function ContentView({ query, setQuery, resources, filtered, status }: { query: 
           <div className="library-empty">
             <span className="library-empty__icon"><Icon name="search" size={23} /></span>
             <h3>{resources.length === 0 ? "Ainda não há materiais na biblioteca" : "Nenhum conteúdo encontrado"}</h3>
-            <p>{resources.length === 0 ? "O RH poderá adicionar materiais para as pessoas da empresa." : "Tente mudar os filtros ou buscar por outro termo."}</p>
+            {resources.length > 0 && <p>Tente mudar os filtros ou buscar por outro termo.</p>}
             {resources.length > 0 && <button className="library-empty__reset" onClick={clearFilters} type="button">Limpar busca e filtros</button>}
           </div>
         )}

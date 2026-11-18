@@ -106,7 +106,7 @@ function PeopleView({ resetVersion, openEmployeeId }: { resetVersion: number; op
   </section>;
 
   return <section className="people-directory">
-    <p className="eyebrow">Diretório da empresa</p><h1 className="mt-1 text-3xl font-extrabold tracking-tight">Pessoas & áreas</h1>
+    <h1 className="text-3xl font-extrabold tracking-tight">Pessoas & áreas</h1>
     <p className="mt-2 text-[#777a91]">Veja as áreas, equipes e pessoas cadastradas pela empresa.</p>
     <div className="people-directory__tabs mt-7">{tabs.map((tab) => <button className={`people-directory__tab ${view === tab.id ? "people-directory__tab--active" : ""}`} key={tab.id} onClick={() => setView(tab.id)} type="button"><Icon name={tab.icon} size={17} /> {tab.label}</button>)}</div>
 
@@ -118,7 +118,7 @@ function PeopleView({ resetVersion, openEmployeeId }: { resetVersion: number; op
     </article>)}</div> : <EmptyState text={empty} />)}
 
     {view === "times" && (teamRows.length ? <div className="mt-6 space-y-4">{teamRows.map(({ team, depth }) => <article className="team-card" key={team.id} style={{ marginLeft: `${Math.min(depth, 3) * 18}px` }}>
-      <div className="team-card__summary"><div className="grid size-11 shrink-0 place-items-center rounded-xl bg-[#e9e8ff] text-[#5859d6]"><Icon name="people" size={20} /></div><div className="min-w-0 flex-1"><h2>{team.name}</h2><p>{team.parentTeamName ? `Subequipe de ${team.parentTeamName}` : team.description || "Equipe da empresa"}</p></div><span className="ml-auto shrink-0 rounded-full bg-[#f5f5f9] px-3 py-1 text-[10px] font-extrabold text-[#888a9d]">{team.members.length} {team.members.length === 1 ? "pessoa" : "pessoas"}</span></div>
+      <div className="team-card__summary"><div className="grid size-11 shrink-0 place-items-center rounded-xl bg-[#e9e8ff] text-[#5859d6]"><Icon name="people" size={20} /></div><div className="min-w-0 flex-1"><h2>{team.name}</h2>{team.parentTeamName && <p>Subequipe de {team.parentTeamName}</p>}</div><span className="ml-auto shrink-0 rounded-full bg-[#f5f5f9] px-3 py-1 text-[10px] font-extrabold text-[#888a9d]">{team.members.length} {team.members.length === 1 ? "pessoa" : "pessoas"}</span></div>
       <div className="team-card__members">{team.members.length ? team.members.map((person) => <PersonRow key={person.id} person={person} compact onClick={() => openPerson(person)} />) : <p className="text-xs text-[#85879a]">Nenhuma pessoa associada a esta equipe.</p>}</div>
     </article>)}</div> : <EmptyState text={empty} />)}
 
@@ -127,7 +127,7 @@ function PeopleView({ resetVersion, openEmployeeId }: { resetVersion: number; op
     </div>}
 
     {view === "novas-pessoas" && <div className="mt-6">
-      <div className="mb-5"><p className="eyebrow">Chegaram recentemente</p><h2 className="mt-1 text-xl font-extrabold">Conheça as novas pessoas</h2><p className="mt-1 text-sm text-[#777a91]">Abra um perfil para saber mais e iniciar uma conversa pelo Teams.</p></div>
+      <div className="mb-5"><h2 className="text-xl font-extrabold">Conheça as novas pessoas</h2><p className="mt-1 text-sm text-[#777a91]">Abra um perfil para saber mais e iniciar uma conversa pelo Teams.</p></div>
       {newHiresStatus === "loading" ? <EmptyState text="Carregando novos perfis..." /> : newHiresStatus === "error" ? <EmptyState text="Não foi possível carregar os novos perfis. Atualize a página para tentar novamente." /> : newHires.length ? <div className="grid gap-4 sm:grid-cols-2 xl:grid-cols-3">{newHires.map((person) => <button className="content-panel flex items-center gap-4 text-left transition hover:-translate-y-0.5 hover:border-[#c8c7ef] hover:shadow-md" key={person.id} onClick={() => openPerson(person, person.department ?? undefined)} type="button"><EmployeeAvatar employeeId={person.id} name={person.name} className="grid size-14 shrink-0 place-items-center rounded-2xl bg-[#f1f0ff] text-base font-extrabold text-[#5b5ce2]" /><span className="min-w-0 flex-1"><strong className="block truncate text-sm text-[#303249]">{person.name}</strong><span className="mt-1 block truncate text-xs text-[#777a91]">{person.jobTitle || "Cargo não informado"}{person.department ? ` · ${person.department}` : ""}</span><span className="mt-2 block text-[11px] font-semibold text-[#7779db]">Na equipe desde {formatStartDate(person.startDate)}</span></span><Icon name="chevron" size={16} /></button>)}</div> : <EmptyState text="Não há novas pessoas para apresentar neste momento." />}
     </div>}
   </section>;
@@ -138,7 +138,7 @@ function OrgTeamNode({ node, onPersonClick }: { node: TeamNode; onPersonClick: (
   const individualContributors = team.members.filter((person) => !team.leaders.some((leader) => leader.id === person.id));
   return <div className="org-tree__node">
     <article className="org-team-card">
-      <div className="org-team-card__heading"><span className="org-team-card__icon"><Icon name="people" size={18} /></span><div className="min-w-0 flex-1"><h3>{team.name}</h3><p>{team.description || "Equipe da empresa"}</p></div><span className="org-team-card__count">{team.members.length} {team.members.length === 1 ? "pessoa" : "pessoas"}</span></div>
+      <div className="org-team-card__heading"><span className="org-team-card__icon"><Icon name="people" size={18} /></span><div className="min-w-0 flex-1"><h3>{team.name}</h3></div><span className="org-team-card__count">{team.members.length} {team.members.length === 1 ? "pessoa" : "pessoas"}</span></div>
       {team.leaders.length > 0 && <div className="org-team-card__leaders"><span className="org-team-card__label">{team.leaders.length === 1 ? "Liderança" : "Lideranças"}</span>{team.leaders.map((leader) => <button className="org-team-person org-team-person--leader" key={leader.id} onClick={() => onPersonClick(leader)} type="button"><EmployeeAvatar employeeId={leader.id} name={leader.name} className="grid size-9 shrink-0 place-items-center rounded-full bg-[#e7e6ff] text-[10px] font-extrabold text-[#5556d8]" /><span><strong>{leader.name}</strong><small>{leader.jobTitle || "Cargo não informado"}</small></span><span className="org-team-person__badge">Líder</span></button>)}</div>}
       {individualContributors.length > 0 && <div className="org-team-card__members"><span className="org-team-card__label">Integrantes · {individualContributors.length}</span><div className="org-team-card__people">{individualContributors.map((person) => <button className="org-team-person" key={person.id} onClick={() => onPersonClick(person)} type="button"><EmployeeAvatar employeeId={person.id} name={person.name} className="grid size-8 shrink-0 place-items-center rounded-full bg-[#f0f0f7] text-[9px] font-extrabold text-[#595c75]" /><span><strong>{person.name}</strong><small>{person.jobTitle || "Cargo não informado"}</small></span></button>)}</div></div>}
       {team.members.length === 0 && team.leaders.length === 0 && <p className="org-team-card__empty">Ainda não há pessoas nesta equipe.</p>}

@@ -31,7 +31,7 @@ function SupportRequestView({ onOpenChat }: { onOpenChat: (requestId: number) =>
   }
 
   return <section className="space-y-7">
-    <header><p className="eyebrow">Suporte ao onboarding</p><h1 className="mt-1 text-3xl font-extrabold tracking-tight">Pedir suporte</h1><p className="mt-2 text-[#777a91]">Envie uma dúvida ou peça ajuda sobre qualquer assunto do seu onboarding.</p></header>
+    <header><h1 className="text-3xl font-extrabold tracking-tight">Pedir suporte</h1><p className="mt-2 text-[#777a91]">Envie uma dúvida ou peça ajuda sobre qualquer assunto do seu onboarding.</p></header>
     {error && <p className="rounded-xl bg-red-50 p-3 text-sm text-red-700" role="alert">{error}</p>}{success && <p className="rounded-xl bg-emerald-50 p-3 text-sm text-emerald-800" role="status">Seu pedido foi enviado ao RH.</p>}
     <form className="max-w-3xl space-y-4 rounded-2xl border border-[#ececf3] bg-white p-5 shadow-sm sm:p-7" onSubmit={submit}>
       <h2 className="text-lg font-extrabold">Como podemos ajudar?</h2>

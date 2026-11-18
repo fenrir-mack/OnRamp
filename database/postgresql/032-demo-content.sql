@@ -39,7 +39,14 @@ WHERE name LIKE 'DEMO |%'
      'Equipe responsável por sistemas, equipamentos e acessos.',
      'Equipe de apoio à contratação e à pré-entrada.',
      'Equipe de Pessoas & Cultura responsável por desenvolvimento e acompanhamento.',
-     'Equipe financeira responsável por planejamento e operações.'
+     'Equipe financeira responsável por planejamento e operações.',
+     'Equipe que pesquisa necessidades, valida ideias e desenha experiências digitais.',
+     'Equipe que constrói e mantém plataformas, ferramentas e sistemas internos.',
+     'Equipe que desenvolve e mantém os produtos e serviços digitais da empresa.',
+     'Equipe que mantém a infraestrutura, os acessos e a segurança dos sistemas.',
+     'Equipe que revisa contratos e conformidade nas contratações.',
+     'Equipe que cuida da integração, do desenvolvimento e da experiência das pessoas.',
+     'Equipe que organiza orçamento, pagamentos e processos financeiros.'
    );
 
 DELETE FROM public.check_ins WHERE employee_id IN (SELECT employee_id FROM demo_employee_ids);
@@ -173,37 +180,38 @@ WHERE mentor.email = 'joao.pedro@senulora.com' AND department.name = 'Pessoas & 
 ON CONFLICT (employee_id, department_id) DO UPDATE SET is_primary = TRUE;
 
 INSERT INTO public.teams (name, description, is_active)
-VALUES ('Produto & Design', 'Equipe de produto responsável por pesquisa, estratégia e experiência.', TRUE),
-       ('Tecnologia', 'Equipe responsável por sistemas, equipamentos e acessos.', TRUE),
-       ('Jurídico', 'Equipe de apoio à contratação e à pré-entrada.', TRUE),
-       ('Pessoas & Cultura', 'Equipe de Pessoas & Cultura responsável por desenvolvimento e acompanhamento.', TRUE),
-       ('Financeiro', 'Equipe financeira responsável por planejamento e operações.', TRUE)
+VALUES ('Pesquisa & Design de Produto', 'Equipe que pesquisa necessidades, valida ideias e desenha experiências digitais.', TRUE),
+       ('Engenharia de Software', 'Equipe que desenvolve e mantém os produtos e serviços digitais da empresa.', TRUE),
+       ('Infraestrutura & Segurança', 'Equipe que mantém a infraestrutura, os acessos e a segurança dos sistemas.', TRUE),
+       ('Contratos & Conformidade', 'Equipe que revisa contratos e conformidade nas contratações.', TRUE),
+       ('Cultura & Desenvolvimento', 'Equipe que cuida da integração, do desenvolvimento e da experiência das pessoas.', TRUE),
+       ('Planejamento Financeiro', 'Equipe que organiza orçamento, pagamentos e processos financeiros.', TRUE)
 ON CONFLICT DO NOTHING;
 INSERT INTO public.employee_teams (employee_id, team_id, team_role, is_primary, joined_at)
 SELECT employee.employee_id, team.team_id, assignment.team_role,
   TRUE,
   employee.created_at::date
 FROM (VALUES
-  ('ana.martins@senulora.com','Produto & Design','Estagiária'),
-  ('rafael.costa@senulora.com','Tecnologia','Estagiário'),
-  ('diego.santos@senulora.com','Tecnologia','Líder de TI'),
-  ('marina.alves@senulora.com','Jurídico','Líder do Jurídico'),
-  ('joao.pedro@senulora.com','Pessoas & Cultura','Mentor'),
-  ('carolina.mendes@senulora.com','Produto & Design','Gerente de Produto'),
-  ('lucas.ferreira@senulora.com','Produto & Design','Designer de Produto'),
-  ('beatriz.souza@senulora.com','Produto & Design','Analista de Produto'),
-  ('pedro.almeida@senulora.com','Tecnologia','Engenheiro de Software'),
-  ('fernanda.costa@senulora.com','Tecnologia','Engenheira de Software'),
-  ('marcos.ribeiro@senulora.com','Tecnologia','Tech Lead'),
-  ('andre.lima@senulora.com','Tecnologia','Analista de TI'),
-  ('thiago.moraes@senulora.com','Tecnologia','Engenheiro de Segurança'),
-  ('admin@senulora.com','Pessoas & Cultura','Admin de RH'),
-  ('camila.rocha@senulora.com','Pessoas & Cultura','Parceira de Pessoas'),
-  ('juliana.lopes@senulora.com','Pessoas & Cultura','Analista de Desenvolvimento Humano'),
-  ('paula.nascimento@senulora.com','Jurídico','Advogada'),
-  ('daniela.barros@senulora.com','Jurídico','Analista Jurídica'),
-  ('rafaela.dias@senulora.com','Financeiro','Analista Financeira'),
-  ('roberto.silva@senulora.com','Financeiro','Gerente Financeiro')
+  ('ana.martins@senulora.com','Pesquisa & Design de Produto','Estagiária'),
+  ('rafael.costa@senulora.com','Engenharia de Software','Estagiário'),
+  ('diego.santos@senulora.com','Infraestrutura & Segurança','Líder de TI'),
+  ('marina.alves@senulora.com','Contratos & Conformidade','Líder do Jurídico'),
+  ('joao.pedro@senulora.com','Cultura & Desenvolvimento','Mentor'),
+  ('carolina.mendes@senulora.com','Pesquisa & Design de Produto','Gerente de Produto'),
+  ('lucas.ferreira@senulora.com','Pesquisa & Design de Produto','Designer de Produto'),
+  ('beatriz.souza@senulora.com','Pesquisa & Design de Produto','Analista de Produto'),
+  ('pedro.almeida@senulora.com','Engenharia de Software','Engenheiro de Software'),
+  ('fernanda.costa@senulora.com','Engenharia de Software','Engenheira de Software'),
+  ('marcos.ribeiro@senulora.com','Engenharia de Software','Tech Lead'),
+  ('andre.lima@senulora.com','Infraestrutura & Segurança','Analista de TI'),
+  ('thiago.moraes@senulora.com','Infraestrutura & Segurança','Engenheiro de Segurança'),
+  ('admin@senulora.com','Cultura & Desenvolvimento','Admin de RH'),
+  ('camila.rocha@senulora.com','Cultura & Desenvolvimento','Parceira de Pessoas'),
+  ('juliana.lopes@senulora.com','Cultura & Desenvolvimento','Analista de Desenvolvimento Humano'),
+  ('paula.nascimento@senulora.com','Contratos & Conformidade','Advogada'),
+  ('daniela.barros@senulora.com','Contratos & Conformidade','Analista Jurídica'),
+  ('rafaela.dias@senulora.com','Planejamento Financeiro','Analista Financeira'),
+  ('roberto.silva@senulora.com','Planejamento Financeiro','Gerente Financeiro')
 ) AS assignment(email,team_name,team_role)
 JOIN public.employees employee ON employee.email = assignment.email
 JOIN public.teams team ON team.name = assignment.team_name
@@ -211,18 +219,19 @@ ON CONFLICT (employee_id, team_id) DO UPDATE
 SET team_role = EXCLUDED.team_role, is_primary = EXCLUDED.is_primary, joined_at = EXCLUDED.joined_at;
 INSERT INTO public.team_leaders (team_id, employee_id)
 SELECT team.team_id, leader.employee_id FROM public.teams team CROSS JOIN public.employees leader
-WHERE (team.name = 'Produto & Design' AND leader.email = 'carolina.mendes@senulora.com')
-   OR (team.name = 'Tecnologia' AND leader.email = 'diego.santos@senulora.com')
-   OR (team.name = 'Jurídico' AND leader.email = 'marina.alves@senulora.com')
-   OR (team.name = 'Pessoas & Cultura' AND leader.email = 'admin@senulora.com')
-   OR (team.name = 'Financeiro' AND leader.email = 'roberto.silva@senulora.com')
+WHERE (team.name = 'Pesquisa & Design de Produto' AND leader.email = 'carolina.mendes@senulora.com')
+   OR (team.name = 'Engenharia de Software' AND leader.email = 'marcos.ribeiro@senulora.com')
+   OR (team.name = 'Infraestrutura & Segurança' AND leader.email = 'diego.santos@senulora.com')
+   OR (team.name = 'Contratos & Conformidade' AND leader.email = 'marina.alves@senulora.com')
+   OR (team.name = 'Cultura & Desenvolvimento' AND leader.email = 'admin@senulora.com')
+   OR (team.name = 'Planejamento Financeiro' AND leader.email = 'roberto.silva@senulora.com')
 ON CONFLICT DO NOTHING;
 INSERT INTO public.employee_teams (employee_id,team_id,team_role,is_primary,joined_at)
 SELECT leader.employee_id,team.team_id,'Líder',TRUE,CURRENT_DATE - 14
 FROM public.team_leaders AS leader
 JOIN public.teams AS team ON team.team_id = leader.team_id
 JOIN public.employees AS employee ON employee.employee_id = leader.employee_id
-WHERE team.name IN ('Produto & Design','Tecnologia','Jurídico','Pessoas & Cultura','Financeiro')
+WHERE team.name IN ('Pesquisa & Design de Produto','Engenharia de Software','Infraestrutura & Segurança','Contratos & Conformidade','Cultura & Desenvolvimento','Planejamento Financeiro')
 ON CONFLICT (employee_id,team_id) DO UPDATE SET team_role = EXCLUDED.team_role, is_primary = TRUE;
 
 INSERT INTO public.onboardings (employee_id, mentor_employee_id, start_date, target_end_date, status)
