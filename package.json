@@ -4,13 +4,16 @@
   "version": "1.0.0",
   "type": "module",
   "scripts": {
-    "dev": "concurrently -k \"npm:dev:api\" \"vite\"",
-    "dev:api": "node --watch --env-file=.env.local server/index.js",
+    "dev": "concurrently -k \"npm:dev:api\" \"npm:dev:web\"",
+    "dev:api": "node --watch-path=server --env-file=.env.local server/index.js",
+    "dev:web": "node --env-file=.env.local scripts/wait-for-api.js && vite",
     "start": "node server/index.js",
     "db:setup": "node --env-file=.env.local scripts/setup-local-db.js",
     "db:setup:cloud": "node --env-file=.env.cloud scripts/setup-local-db.js",
     "db:demo": "node --env-file=.env.local scripts/manage-demo-content.js seed",
     "db:demo:clear": "node --env-file=.env.local scripts/manage-demo-content.js clear",
+    "db:reset:demo:local": "node --env-file=.env.local scripts/reset-demo-database.js --local",
+    "db:reset:demo:cloud": "node --env-file=.env.cloud scripts/reset-demo-database.js --cloud",
     "build": "vite build",
     "preview": "vite preview",
     "format": "oxfmt"

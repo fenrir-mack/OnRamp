@@ -2694,6 +2694,10 @@ app.get("/api/people/new", requireAuthenticated, async (request, response) => {
       ) AS onboarding ON TRUE
       WHERE employee.is_active IS TRUE AND employee.is_hr_admin IS FALSE
         AND employee.employee_id <> $1
+        AND NOT EXISTS (
+          SELECT 1 FROM public.onboardings AS mentoring
+          WHERE mentoring.mentor_employee_id = employee.employee_id AND mentoring.status = 'active'
+        )
         AND COALESCE(onboarding.start_date, employee.created_at::date) >= CURRENT_DATE - INTERVAL '90 days'
       ORDER BY COALESCE(onboarding.start_date, employee.created_at::date) DESC, employee.full_name
       LIMIT 12
@@ -2865,7 +2869,10 @@ app.get("/api/organization", requireAuthenticated, async (_request, response) =>
               'id', employee.employee_id, 'name', employee.full_name, 'email', employee.email, 'jobTitle', employee.job_title,
               'isLeader', EXISTS (SELECT 1 FROM public.team_leaders AS leader
                 WHERE leader.team_id = team.team_id AND leader.employee_id = employee.employee_id)
-            ) ORDER BY employee.full_name)
+            ) ORDER BY EXISTS (
+              SELECT 1 FROM public.team_leaders AS ordered_leader
+              WHERE ordered_leader.team_id = team.team_id AND ordered_leader.employee_id = employee.employee_id
+            ) DESC, employee.full_name)
             FROM public.employee_teams AS membership
             INNER JOIN public.employees AS employee ON employee.employee_id = membership.employee_id
             WHERE membership.team_id = team.team_id AND employee.is_active IS TRUE

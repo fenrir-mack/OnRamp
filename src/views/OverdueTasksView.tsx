@@ -28,6 +28,7 @@ type TaskGroup = {
 export default function OverdueTasksView() {
   const [tasks, setTasks] = useState<OverdueTask[]>([]);
   const [status, setStatus] = useState<"loading" | "ready" | "error">("loading");
+  const [retryKey, setRetryKey] = useState(0);
   const [selectedEmployee, setSelectedEmployee] = useState<AuthenticatedEmployee | null>(null);
   const [profileLoading, setProfileLoading] = useState(false);
   const [profileError, setProfileError] = useState("");
@@ -37,18 +38,30 @@ export default function OverdueTasksView() {
     let active = true;
     async function refresh(showLoading = false) {
       if (showLoading) setStatus("loading");
-      try {
-        const response = await fetch("/api/hr/overdue-tasks", { signal: controller.signal });
-        const result = await response.json();
-        if (!response.ok) throw new Error(result.error ?? "Não foi possível carregar as tarefas atrasadas.");
-        if (active) {
-          setTasks(result as OverdueTask[]);
-          setStatus("ready");
+      for (let attempt = 0; attempt < 3; attempt += 1) {
+        if (!active) return;
+        try {
+          const response = await fetch("/api/hr/overdue-tasks", { signal: controller.signal });
+          if (response.status >= 500 && attempt < 2) {
+            await new Promise((resolve) => window.setTimeout(resolve, 300 * (attempt + 1)));
+            continue;
+          }
+          const result = await response.json();
+          if (!response.ok) throw new Error(result.error ?? "Não foi possível carregar as tarefas atrasadas.");
+          if (active) {
+            setTasks(result as OverdueTask[]);
+            setStatus("ready");
+          }
+          return;
+        } catch (loadError) {
+          if (!active || (loadError instanceof DOMException && loadError.name === "AbortError")) return;
+          if (attempt < 2) {
+            await new Promise((resolve) => window.setTimeout(resolve, 300 * (attempt + 1)));
+            continue;
+          }
         }
-      } catch (loadError) {
-        if (!active || (loadError instanceof DOMException && loadError.name === "AbortError")) return;
-        setStatus("error");
       }
+      if (active) setStatus("error");
     }
     void refresh(true);
     const interval = window.setInterval(() => void refresh(), 60_000);
@@ -60,7 +73,7 @@ export default function OverdueTasksView() {
       window.clearInterval(interval);
       window.removeEventListener("focus", refreshOnFocus);
     };
-  }, []);
+  }, [retryKey]);
 
   const groups = useMemo(() => {
     const grouped = new Map<string, TaskGroup>();
@@ -105,7 +118,7 @@ export default function OverdueTasksView() {
     {profileLoading && <p className="mt-5 text-sm text-[#777a91]" role="status">Carregando perfil...</p>}
     {profileError && <p className="mt-5 rounded-xl bg-red-50 p-3 text-sm text-red-700" role="alert">{profileError}</p>}
     {status === "loading" ? <div className="mt-6 rounded-2xl border border-[#e8e8f0] bg-white p-6 text-sm text-[#85879a]">Verificando prazos das jornadas...</div>
-      : status === "error" ? <div className="mt-6 rounded-2xl border border-red-200 bg-red-50 p-6 text-sm text-red-700">Não foi possível carregar as tarefas atrasadas. Atualize a página para tentar novamente.</div>
+      : status === "error" ? <div className="mt-6 flex flex-wrap items-center justify-between gap-4 rounded-2xl border border-red-200 bg-red-50 p-6 text-sm text-red-700"><span>Não foi possível carregar as tarefas atrasadas agora.</span><button className="rounded-lg border border-red-200 bg-white px-3 py-2 text-xs font-bold text-red-700 transition hover:bg-red-100" onClick={() => { setStatus("loading"); setRetryKey((current) => current + 1); }} type="button">Tentar novamente</button></div>
         : groups.length ? <div className="mt-6 space-y-4">{groups.map((group) => <article className="content-panel" key={group.key}>
           <div className="flex flex-wrap items-start justify-between gap-3 border-b border-[#eeeeF4] pb-4">
             <div><p className="eyebrow">{group.stageName}</p><h2 className="mt-1 text-lg font-extrabold text-[#303249]">{group.title}</h2></div>

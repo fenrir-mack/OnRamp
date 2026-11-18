@@ -118,7 +118,7 @@ function PeopleView({ resetVersion, openEmployeeId }: { resetVersion: number; op
     </article>)}</div> : <EmptyState text={empty} />)}
 
     {view === "times" && (teamRows.length ? <div className="mt-6 space-y-4">{teamRows.map(({ team, depth }) => <article className="team-card" key={team.id} style={{ marginLeft: `${Math.min(depth, 3) * 18}px` }}>
-      <div className="team-card__summary"><div className="grid size-11 place-items-center rounded-xl bg-[#e9e8ff] text-[#5859d6]"><Icon name="people" size={20} /></div><div><h2>{team.name}</h2><p>{team.parentTeamName ? `Subequipe de ${team.parentTeamName}` : team.description || "Equipe da empresa"}</p></div><span className="ml-auto rounded-full bg-[#f5f5f9] px-3 py-1 text-[10px] font-extrabold text-[#888a9d]">{team.members.length} {team.members.length === 1 ? "pessoa" : "pessoas"}</span></div>
+      <div className="team-card__summary"><div className="grid size-11 shrink-0 place-items-center rounded-xl bg-[#e9e8ff] text-[#5859d6]"><Icon name="people" size={20} /></div><div className="min-w-0 flex-1"><h2>{team.name}</h2><p>{team.parentTeamName ? `Subequipe de ${team.parentTeamName}` : team.description || "Equipe da empresa"}</p></div><span className="ml-auto shrink-0 rounded-full bg-[#f5f5f9] px-3 py-1 text-[10px] font-extrabold text-[#888a9d]">{team.members.length} {team.members.length === 1 ? "pessoa" : "pessoas"}</span></div>
       <div className="team-card__members">{team.members.length ? team.members.map((person) => <PersonRow key={person.id} person={person} compact onClick={() => openPerson(person)} />) : <p className="text-xs text-[#85879a]">Nenhuma pessoa associada a esta equipe.</p>}</div>
     </article>)}</div> : <EmptyState text={empty} />)}
 

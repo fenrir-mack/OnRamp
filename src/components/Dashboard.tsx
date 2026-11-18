@@ -133,9 +133,16 @@ function Dashboard({ employee, onLogout }: { employee: AuthenticatedEmployee; on
   useEffect(() => {
     let cancelled = false;
     let objectUrl = "";
+    const cachedPhotoKey = `onramp-profile-photo-${employee.id}`;
     fetch("/api/me/profile-photo")
       .then(async (response) => {
-        if (response.status === 404) return null;
+        if (response.status === 404) {
+          if (!cancelled) {
+            localStorage.removeItem(cachedPhotoKey);
+            setProfilePhoto("");
+          }
+          return null;
+        }
         if (!response.ok) throw new Error("Could not load the profile photo.");
         return response.blob();
       })

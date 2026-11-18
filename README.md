@@ -71,7 +71,7 @@ Com o serviço PostgreSQL ligado e o `.env.local` preenchido, rode:
 npm run db:setup
 ```
 
-O comando cria o banco `onramp` quando necessário e aplica o schema, as migrações e os dados locais, incluindo as contas de teste e os pacotes iniciais de pré-entrada. Pode ser executado novamente para atualizar os dados de demonstração.
+O comando cria o banco `onramp` quando necessário e aplica o schema, as migrações e os dados locais, incluindo as contas e os pacotes iniciais de pré-entrada. Pode ser executado novamente para atualizar o ambiente local.
 
 Se a conexão falhar, confira se o serviço PostgreSQL está ligado e se `PGHOST`, `PGPORT`, `PGUSER` e `PGPASSWORD` em `.env.local` correspondem à instalação local. Para um PostgreSQL hospedado que exige TLS, defina `PGSSL=true`.
 
@@ -87,29 +87,46 @@ Isso inicia a API Express e o frontend Vite. Abra **http://localhost:8443** no n
 
 Para encerrar, volte ao terminal e pressione `Ctrl+C`.
 
-## Contas de teste
+## Contas locais
 
-O setup local cria estas contas:
+`npm run db:setup` prepara o schema e as duas contas base. Depois, `npm run db:demo` cria o cenário local com 20 pessoas: uma admin de RH, uma pessoa mentora, estagiários, lideranças e profissionais de Produto, Tecnologia, Pessoas & Cultura, Jurídico e Financeiro. Só a conta admin tem acesso à página de configuração do RH.
 
 | E-mail | Senha | Acesso |
 | --- | --- | --- |
-| `fenrir1@gmail.com` | `fenrir1` | Pessoa colaboradora |
-| `fenrir2@gmail.com` | `fenrir2` | Pessoa colaboradora |
-| `fenrir3@gmail.com` | `fenrir3` | Espaço do RH |
+| `admin@senulora.com` | `fenrir3` | Única admin do RH |
+| `joao.pedro@senulora.com` | `fenrir2` | Mentor de Pessoas & Cultura |
+| `ana.martins@senulora.com` | `fenrir1` | Estagiária de Produto |
+| `rafael.costa@senulora.com` | `fenrir1` | Estagiário de Tecnologia |
+| `diego.santos@senulora.com` | `fenrir1` | Responsável de TI |
+| `marina.alves@senulora.com` | `fenrir1` | Responsável do Jurídico |
+| `carolina.mendes@senulora.com` | `fenrir1` | Gerente de Produto |
+| `lucas.ferreira@senulora.com` | `fenrir1` | Designer de Produto Sênior |
+| `beatriz.souza@senulora.com` | `fenrir1` | Analista de Produto Sênior |
+| `pedro.almeida@senulora.com` | `fenrir1` | Engenheiro de Software Sênior |
+| `fernanda.costa@senulora.com` | `fenrir1` | Engenheira de Software Sênior |
+| `marcos.ribeiro@senulora.com` | `fenrir1` | Tech Lead |
+| `andre.lima@senulora.com` | `fenrir1` | Analista de TI Sênior |
+| `thiago.moraes@senulora.com` | `fenrir1` | Engenheiro de Segurança Sênior |
+| `camila.rocha@senulora.com` | `fenrir1` | Parceira de Pessoas |
+| `juliana.lopes@senulora.com` | `fenrir1` | Analista de Desenvolvimento Humano |
+| `paula.nascimento@senulora.com` | `fenrir1` | Advogada Sênior |
+| `daniela.barros@senulora.com` | `fenrir1` | Analista Jurídica |
+| `rafaela.dias@senulora.com` | `fenrir1` | Analista Financeira |
+| `roberto.silva@senulora.com` | `fenrir1` | Gerente Financeiro |
 
-As senhas são armazenadas como hashes scrypt. Essas contas são apenas para desenvolvimento local; não as use em produção. A conta `fenrir3@gmail.com` tem acesso ao RH para gerenciar pessoas e jornadas. As contas 1 e 2 não têm permissão para acessar o espaço do RH.
+As senhas são armazenadas como hashes scrypt. Essas credenciais são para uso local; não as use em produção.
 
-### Cenário de demonstração
+### Cenário local
 
-O cenário local inclui três novas pessoas fictícias, planos e tarefas em diferentes estados, preparação pré-entrada, biblioteca, treinamento, check-ins, feedback e solicitações de suporte. Nenhuma conversa ou mensagem de chat é criada. As contas abaixo entram como colaboradoras; use `fenrir3@gmail.com` para explorar o espaço do RH:
+O cenário local inclui jornadas em estados diferentes, dez jornadas concluídas de pessoas sêniores, preparação de pré-entrada, responsabilidades de TI e Jurídico, equipes e lideranças, check-ins, feedback, solicitações de suporte e conversas. A pessoa do Jurídico pode assumir tarefas da pré-entrada após receber acesso da admin do RH. A biblioteca começa sem materiais; o RH pode enviar arquivos pelo próprio sistema quando o armazenamento estiver configurado.
 
-| E-mail | Senha |
-| --- | --- |
-| `demo.ana@onramp.local` | `fenrir1` |
-| `demo.rafael@onramp.local` | `fenrir1` |
-| `demo.camila@onramp.local` | `fenrir1` |
+O setup prepara sete pacotes de tarefas: Acessos e ferramentas, Equipamento e segurança, Admissão e documentos, Primeira semana com a equipe, Trilha inicial de Produto, Trilha inicial de Tecnologia e Check-ins e primeiros objetivos.
 
-Atualize ou recrie o cenário com `npm run db:demo`. Para remover os registros fictícios e as três contas, rode `npm run db:demo:clear`. Esses comandos usam somente `.env.local`.
+`npm run db:demo` atualiza os registros de onboarding do ambiente local. `npm run db:demo:clear` remove as contas de onboarding e seus registros, mantendo tabelas, catálogos e as contas base de admin e mentoria.
+
+Para apagar todos os registros do PostgreSQL local e reconstruir o cenário de 20 pessoas, rode `npm run db:reset:demo:local`. O comando exige que `.env.local` aponte para um PostgreSQL neste computador.
+
+Para apagar todos os registros do banco PostgreSQL no Azure e recriar o cenário de 20 pessoas, rode `npm run db:reset:demo:cloud`. Essa operação preserva as tabelas e recria os catálogos, as contas, as jornadas e os dados de onboarding. Ela não apaga arquivos já existentes no Blob Storage; esses objetos precisam ser administrados separadamente.
 
 ## Arquivos enviados
 
@@ -154,7 +171,7 @@ API_PORT=3000
 ONRAMP_FILE_STORAGE_PATH=storage/files
 ```
 
-No terminal, rode `npm run db:setup:cloud`. Isso cria o esquema e as tabelas, aplica as migrações até `016` e inclui os dados iniciais usados pelo app. O setup pode ser repetido para atualizar o banco.
+No terminal, rode `npm run db:setup:cloud`. Isso cria o esquema e as tabelas, aplica as migrações até `034` e inclui os dados iniciais usados pelo app. O setup pode ser repetido para atualizar o banco.
 
 ### 3. Configurar o App Service
 
@@ -168,15 +185,15 @@ No firewall do Flexible Server, permita também os IPs de saída mostrados em **
 
 Abra `https://<seu-app>.azurewebsites.net/api/health`. A resposta `{"status":"ok","database":"onramp"}` confirma que a API conectou ao banco. Para conferir o armazenamento de arquivos, abra `https://<seu-app>.azurewebsites.net/api/health/storage`; com Azure configurado, a resposta deve incluir `{"status":"ok","storage":"azure"}`. Depois confira login, biblioteca e jornada na página.
 
-As contas `fenrir1@gmail.com`, `fenrir2@gmail.com` e `fenrir3@gmail.com` têm senhas de demonstração conhecidas. Use-as apenas num ambiente privado de teste; antes de abrir o site publicamente, crie/defina credenciais fortes para as contas.
+As contas locais listadas acima têm senhas conhecidas. Use-as apenas num ambiente privado; antes de abrir o site publicamente, defina credenciais fortes.
 
 ## Estrutura do banco
 
 Os scripts SQL ficam em `database/postgresql/` e são aplicados por `npm run db:setup`:
 
 - `001-schema.sql`: tabelas e views principais.
-- `002-seed.sql`: departamentos, contas de teste, etapas e tarefas de demonstração.
-- `003-local-resources.sql`: materiais locais de demonstração.
+- `002-seed.sql`: departamentos, contas iniciais, etapas e tarefas base.
+- `003-local-resources.sql`: ponto de extensão para materiais locais; não cria arquivos fictícios.
 - `004-auth.sql`: senhas com hash e sessões de login.
 - `005-employee-plans.sql` a `008-employee-plan-configurations.sql`: jornadas, tarefas e materiais configurados por pessoa.
 - `009-resource-files.sql` e `010-remove-resource-estimated-minutes.sql`: metadados dos arquivos e ajuste do modelo de materiais.
@@ -185,3 +202,8 @@ Os scripts SQL ficam em `database/postgresql/` e são aplicados por `npm run db:
 - `014-employee-organization.sql`: permite associar cada pessoa a várias áreas e equipes independentes.
 - `015-team-hierarchies.sql`: permite equipes subordinadas e vários líderes por equipe.
 - `016-employee-plan-progress.sql`: persiste conclusões de tarefas e problemas informados nas jornadas individuais.
+- `017` a `019`: conversas, mensagens, leitura e confirmação da resolução de problemas.
+- `020` a `023`: solicitações de suporte, chat, prazos de pré-entrada, histórico e acesso por área responsável.
+- `024` a `029`: categorias de pré-entrada, status flexíveis, comentários, hierarquia e áreas que podem assumir tarefas.
+- `030` e `031`: escopo e público dos materiais da biblioteca.
+- `034-check-in-chat.sql`: conversas associadas a check-ins.

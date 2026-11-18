@@ -48,11 +48,11 @@
 .team-card__summary { display: flex; align-items: center; gap: 13px; }
 .team-card__summary h2 { font-size: 14px; font-weight: 800; }
 .team-card__summary p { margin-top: 3px; color: #8a8da2; font-size: 10px; }
-.team-card__members { display: flex; flex-wrap: wrap; gap: 20px; }
+.team-card__members { display: grid; grid-template-columns: repeat(auto-fill, minmax(min(100%, 250px), 250px)); gap: 12px; }
 
 .people-person { display: flex; min-width: 0; align-items: center; gap: 10px; border: 1px solid transparent; border-radius: 13px; padding: 7px; }
 .people-person--leader { border-color: #e2e0fa; background: #f7f6ff; }
-.people-person--compact { min-width: 180px; flex: 1 1 180px; }
+.people-person--compact { width: 100%; min-width: 0; }
 .people-person__avatar { display: grid; width: 38px; height: 38px; flex: 0 0 38px; place-items: center; border-radius: 11px; background: #f1f1f7; color: #595c75; font-size: 11px; font-weight: 800; }
 .people-person--leader .people-person__avatar { background: #e8e7ff; color: #5556d8; }
 .people-person__details { min-width: 0; flex: 1; }

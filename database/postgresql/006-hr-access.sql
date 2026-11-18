@@ -1,12 +1,12 @@
-/* Explicit RH administration permission for the Fenrir 3 test account. */
+/* Exactly one RH administrator for the demo environment. */
 
 ALTER TABLE public.Employees
   ADD COLUMN IF NOT EXISTS Is_HR_Admin BOOLEAN NOT NULL DEFAULT FALSE;
 
 UPDATE public.Employees
 SET Is_HR_Admin = FALSE
-WHERE Email IN ('fenrir1@gmail.com', 'fenrir2@gmail.com');
+WHERE Email = 'joao.pedro@senulora.com';
 
 UPDATE public.Employees
 SET Is_HR_Admin = TRUE
-WHERE Email = 'fenrir3@gmail.com';
+WHERE Email = 'admin@senulora.com';

@@ -241,6 +241,8 @@ function HrPlansView({ section }: { section: "people" | "plans" | "files" }) {
   const [stages, setStages] = useState<Stage[]>([]);
   const [taskPresets, setTaskPresets] = useState<TaskPreset[]>([]);
   const [selectedPresetIds, setSelectedPresetIds] = useState<number[]>([]);
+  const [presetStageFilterId, setPresetStageFilterId] = useState<number | null>(null);
+  const [presetPage, setPresetPage] = useState(0);
   const [showPresetForm, setShowPresetForm] = useState(false);
   const [presetName, setPresetName] = useState("");
   const [presetDescription, setPresetDescription] = useState("");
@@ -331,6 +333,8 @@ function HrPlansView({ section }: { section: "people" | "plans" | "files" }) {
         setLibraryResources(resourceRows.map((resource) => ({ ...resource, id: Number(resource.id), audience_employee_ids: (resource.audience_employee_ids ?? []).map(Number) })));
         setResourceCategories(categoryRows);
         setTaskPresets(presetRows);
+        setPresetStageFilterId(null);
+        setPresetPage(0);
         setResourceDraft((current) => ({ ...current, categorySlug: current.categorySlug || categoryRows.find(({ slug }) => slug === "onboarding")?.slug || categoryRows[0]?.slug || "" }));
         setSelectedAccountId(null);
         setSelectedStageId(stageRows[0]?.id ?? null);
@@ -394,6 +398,17 @@ function HrPlansView({ section }: { section: "people" | "plans" | "files" }) {
       && (!normalizedResourceSearch || `${resource.title} ${resource.description ?? ""} ${resource.category}`.normalize("NFD").replace(/[\u0300-\u036f]/g, "").toLocaleLowerCase("pt-BR").includes(normalizedResourceSearch)),
   );
   const teamRows = useMemo(() => buildTeamTree(teams), [teams]);
+  const filteredTaskPresets = useMemo(
+    () => taskPresets.filter((preset) => presetStageFilterId === null
+      || preset.tasks.some((task) => task.stageTemplateId === presetStageFilterId)),
+    [taskPresets, presetStageFilterId],
+  );
+  const presetPageCount = Math.max(1, Math.ceil(filteredTaskPresets.length / 9));
+  const visibleTaskPresets = useMemo(
+    () => filteredTaskPresets.slice(presetPage * 9, presetPage * 9 + 9),
+    [filteredTaskPresets, presetPage],
+  );
+  const selectedPresetStage = stages.find((stage) => stage.id === presetStageFilterId);
   const normalizedTeamSearch = teamSearch.trim().normalize("NFD").replace(/[\u0300-\u036f]/g, "").toLocaleLowerCase("pt-BR");
   const visibleTeamRows = normalizedTeamSearch
     ? teamRows.filter(({ team }) => team.name.normalize("NFD").replace(/[\u0300-\u036f]/g, "").toLocaleLowerCase("pt-BR").includes(normalizedTeamSearch))
@@ -510,6 +525,7 @@ function HrPlansView({ section }: { section: "people" | "plans" | "files" }) {
       const rows = await refreshed.json();
       if (!refreshed.ok) throw new Error(rows.error ?? "O pacote foi salvo, mas não foi possível atualizar a lista.");
       setTaskPresets(rows as TaskPreset[]);
+      setPresetPage(0);
       setPresetName("");
       setPresetDescription("");
       setPresetTasks([]);
@@ -1105,7 +1121,7 @@ function HrPlansView({ section }: { section: "people" | "plans" | "files" }) {
                   <div className="flex gap-2"><button className="button-primary h-9 px-3 text-xs" disabled={savingOrganization} type="submit">Salvar</button><button className="rounded-lg border px-3 text-xs" onClick={() => setEditingTeamId(null)} type="button">Cancelar</button></div>
                 </form> : <><div className="flex items-start justify-between gap-3"><div><div className="flex flex-wrap items-center gap-2"><h3 className="font-extrabold text-[#303249]">{team.name}</h3>{team.parentTeamName && <span className="rounded-full bg-[#f3f3f8] px-2 py-1 text-[10px] font-semibold text-[#777a91]">Subequipe de {team.parentTeamName}</span>}</div><p className="mt-1 text-xs text-[#85879a]">{team.description || "Sem descrição"}</p></div><div className="flex shrink-0 items-center gap-2"><span className="rounded-full bg-[#f3f3f8] px-2.5 py-1 text-[10px] font-bold text-[#777a91]">{members.length} {members.length === 1 ? "pessoa" : "pessoas"}</span><button className="text-xs font-bold text-[#5556d8]" onClick={() => { setEditingTeamId(team.id); setEditTeamDraft({ name: team.name, description: team.description ?? "", parentTeamId: String(team.parentTeamId ?? ""), memberIds: team.memberIds, leaderIds: team.leaderIds }); }} type="button">Editar</button></div></div>
                   {team.leaders.length > 0 && <p className="mt-3 text-xs text-[#777a91]">Líderes: <strong className="text-[#45475d]">{team.leaders.join(" · ")}</strong></p>}
-                  <div className="mt-3 border-t border-[#eeeeF4] pt-3">{members.length ? <div className="flex flex-wrap gap-2">{members.map((person) => <span className={`inline-flex items-center gap-2 rounded-full py-1 pl-1 pr-2.5 text-[10px] font-semibold ${team.leaderIds.includes(person.id) ? "bg-[#eeedff] text-[#5556d8]" : "bg-[#f5f5f9] text-[#66687d]"}`} key={person.id}>{team.leaderIds.includes(person.id) && "★"}<EmployeeAvatar employeeId={person.id} name={person.name} className="grid size-7 place-items-center rounded-full bg-[#e9e8ff] text-[9px] font-extrabold text-[#5859d6]" />{person.name} · {person.departments.join(", ") || "Sem área"}</span>)}</div> : <p className="text-xs text-[#777a91]">Ainda sem pessoas associadas.</p>}</div></>}
+                  <div className="mt-3 border-t border-[#eeeeF4] pt-3">{members.length ? <div className="flex flex-wrap gap-2">{members.map((person) => <span className={`inline-flex items-center gap-2 rounded-full py-1 pl-1 pr-2.5 text-[10px] font-semibold ${team.leaderIds.includes(person.id) ? "bg-[#eeedff] text-[#5556d8]" : "bg-[#f5f5f9] text-[#66687d]"}`} key={person.id}><EmployeeAvatar employeeId={person.id} name={person.name} className="grid size-7 place-items-center rounded-full bg-[#e9e8ff] text-[9px] font-extrabold text-[#5859d6]" />{person.name} · {person.departments.join(", ") || "Sem área"}</span>)}</div> : <p className="text-xs text-[#777a91]">Ainda sem pessoas associadas.</p>}</div></>}
               </article>;
             })}</div>
           </section>}
@@ -1141,10 +1157,37 @@ function HrPlansView({ section }: { section: "people" | "plans" | "files" }) {
         </div>
 
         <section className="content-panel mt-5" aria-labelledby="task-presets-title">
-          <div className="flex flex-wrap items-start justify-between gap-4">
-            <div><h2 id="task-presets-title" className="text-xl font-extrabold">Pacotes prontos</h2></div>
-            <button className="rounded-xl border border-[#dedeea] bg-white px-4 py-3 text-sm font-extrabold text-[#5556d8]" onClick={() => { setShowPresetForm((show) => !show); setError(""); }} type="button">{showPresetForm ? "Fechar criação" : "+ Criar pacote"}</button>
+          <div className="flex flex-wrap items-center justify-between gap-3">
+            <div className="flex min-w-0 flex-wrap items-center gap-x-4 gap-y-2">
+              <h2 id="task-presets-title" className="text-xl font-extrabold">Pacotes prontos</h2>
+              <div aria-label="Filtrar pacotes por etapa" className="flex max-w-full flex-wrap gap-1.5" role="group">
+                {stages.map((stage) => {
+                  const stagePresetCount = taskPresets.filter((preset) => preset.tasks.some((task) => task.stageTemplateId === stage.id)).length;
+                  const isActive = presetStageFilterId === stage.id;
+                  return <button
+                    aria-pressed={isActive}
+                    className={`inline-flex min-h-8 items-center gap-1.5 rounded-lg border px-2.5 py-1.5 text-[11px] font-bold transition ${isActive ? "border-[#aaaaf0] bg-[#f0efff] text-[#5556d8] shadow-sm" : "border-[#e7e7ef] bg-white text-[#777a91] hover:border-[#c9c8ed] hover:bg-[#fafafe]"}`}
+                    key={stage.id}
+                    onClick={() => {
+                      setPresetStageFilterId((current) => current === stage.id ? null : stage.id);
+                      setPresetPage(0);
+                    }}
+                    title={isActive ? "Clique novamente para limpar o filtro" : `Mostrar pacotes da etapa ${stage.name}`}
+                    type="button"
+                  >
+                    <span>{stage.name}</span>
+                    <span className={`rounded-full px-1.5 py-0.5 text-[9px] leading-none ${isActive ? "bg-white/80 text-[#5556d8]" : "bg-[#f3f3f8] text-[#777a91]"}`}>{stagePresetCount}</span>
+                  </button>;
+                })}
+              </div>
+            </div>
+            <button className="rounded-xl border border-[#dedeea] bg-white px-4 py-2.5 text-sm font-extrabold text-[#5556d8]" onClick={() => { setShowPresetForm((show) => !show); setError(""); }} type="button">{showPresetForm ? "Fechar criação" : "+ Criar pacote"}</button>
           </div>
+          <p className="mt-2 text-[11px] text-[#85879a]">
+            {selectedPresetStage
+              ? `${filteredTaskPresets.length} ${filteredTaskPresets.length === 1 ? "pacote" : "pacotes"} em ${selectedPresetStage.name}. Clique na etapa novamente para ver todos.`
+              : `Todos os ${taskPresets.length} pacotes · Escolha uma etapa para filtrar.`}
+          </p>
 
           {showPresetForm && <form className="mt-5 rounded-xl border border-[#e6e6ef] bg-[#fafafe] p-4" onSubmit={savePreset}>
             <div className="flex flex-wrap items-start justify-between gap-3"><div><p className="eyebrow">Novo pacote</p><h3 className="mt-1 font-extrabold">Monte uma lista reutilizável</h3></div></div>
@@ -1175,7 +1218,23 @@ function HrPlansView({ section }: { section: "people" | "plans" | "files" }) {
             <div className="mt-4 flex justify-end"><button className="button-primary h-11 px-5" disabled={creatingPreset || presetTasks.length === 0} type="submit">{creatingPreset ? "Salvando..." : `Salvar pacote (${presetTasks.length})`}</button></div>
           </form>}
 
-          {taskPresets.length ? <div className="mt-5 grid gap-3 md:grid-cols-2 xl:grid-cols-3">{taskPresets.map((preset) => <label className={`flex cursor-pointer items-start gap-3 rounded-xl border p-4 transition ${selectedPresetIds.includes(preset.id) ? "border-[#b8b8f2] bg-[#f7f6ff]" : "border-[#ededf3] hover:bg-[#fafafe]"}`} key={preset.id}><input className="mt-1 size-4 accent-[#5b5ce2]" type="checkbox" checked={selectedPresetIds.includes(preset.id)} onChange={(event) => togglePreset(preset.id, event.target.checked)} /><span className="min-w-0"><strong className="block text-sm text-[#303249]">{preset.name}</strong><small className="mt-1 block text-xs text-[#85879a]">{preset.description || preset.tasks.length + (preset.tasks.length === 1 ? " tarefa" : " tarefas")}</small><span className="mt-2 flex flex-wrap gap-1">{Array.from(new Set(preset.tasks.map((task) => task.stageName))).map((stageName) => <span className="rounded-full bg-white px-2 py-1 text-[10px] font-bold text-[#777a91]" key={stageName}>{stageName}</span>)}</span></span></label>)}</div> : <p className="mt-5 rounded-xl bg-[#fafafe] p-4 text-sm text-[#85879a]">Ainda não há pacotes. Crie, por exemplo, “Contas da empresa” e “Contas de programador”.</p>}
+          {filteredTaskPresets.length ? <div className="mt-4 grid grid-cols-[minmax(0,1fr)_2.5rem] items-center gap-2">
+            <div className="grid min-w-0 grid-cols-1 gap-2 sm:grid-cols-3">
+              {visibleTaskPresets.map((preset) => <label className={`flex min-h-[112px] cursor-pointer items-start gap-2.5 rounded-xl border p-3 transition ${selectedPresetIds.includes(preset.id) ? "border-[#b8b8f2] bg-[#f7f6ff]" : "border-[#ededf3] hover:border-[#d4d3ed] hover:bg-[#fafafe]"}`} key={preset.id}>
+                <input aria-label={`Selecionar pacote ${preset.name}`} className="mt-0.5 size-4 shrink-0 accent-[#5b5ce2]" type="checkbox" checked={selectedPresetIds.includes(preset.id)} onChange={(event) => togglePreset(preset.id, event.target.checked)} />
+                <span className="flex min-w-0 flex-1 flex-col">
+                  <span className="flex items-start justify-between gap-2"><strong className="line-clamp-2 text-xs leading-4 text-[#303249]">{preset.name}</strong><span className="shrink-0 rounded-full bg-[#f3f3f8] px-1.5 py-0.5 text-[9px] font-bold text-[#777a91]">{preset.tasks.length}</span></span>
+                  <small className="mt-1 line-clamp-2 text-[10px] leading-4 text-[#85879a]">{preset.description || preset.tasks.length + (preset.tasks.length === 1 ? " tarefa" : " tarefas")}</small>
+                  <span className="mt-auto flex flex-wrap gap-1 pt-2">{Array.from(new Set(preset.tasks.map((task) => task.stageName))).map((stageName) => <span className="rounded-full bg-white px-1.5 py-0.5 text-[9px] font-bold text-[#777a91]" key={stageName}>{stageName}</span>)}</span>
+                </span>
+              </label>)}
+            </div>
+            <div aria-label="Navegar pelos pacotes" className="flex flex-col items-center justify-center gap-1.5">
+              <button aria-label="Mostrar pacotes anteriores" className="grid size-9 place-items-center rounded-full border border-[#e5e5ef] bg-white text-[#6465d9] shadow-sm transition hover:bg-[#f5f4ff] disabled:cursor-not-allowed disabled:opacity-35" disabled={presetPage === 0} onClick={() => setPresetPage((current) => Math.max(0, current - 1))} title="Pacotes anteriores" type="button"><span className="rotate-180"><Icon name="chevron" size={16} /></span></button>
+              <span aria-live="polite" className="text-[9px] font-bold text-[#85879a]">{presetPage + 1}/{presetPageCount}</span>
+              <button aria-label="Mostrar mais pacotes" className="grid size-9 place-items-center rounded-full border border-[#e5e5ef] bg-white text-[#6465d9] shadow-sm transition hover:bg-[#f5f4ff] disabled:cursor-not-allowed disabled:opacity-35" disabled={presetPage + 1 >= presetPageCount} onClick={() => setPresetPage((current) => Math.min(presetPageCount - 1, current + 1))} title="Mostrar mais pacotes" type="button"><Icon name="chevron" size={16} /></button>
+            </div>
+          </div> : <p className="mt-4 rounded-xl bg-[#fafafe] p-4 text-sm text-[#85879a]">{selectedPresetStage ? `Ainda não há pacotes para ${selectedPresetStage.name}.` : "Ainda não há pacotes. Crie, por exemplo, “Acessos e ferramentas” ou “Primeira semana com a equipe”."}</p>}
           <div className="mt-4 flex justify-end"><button className="button-primary h-11 px-5" disabled={!selectedAccount || !selectedPresetIds.length || loadingPlan} onClick={applySelectedPresets} type="button">Adicionar pacotes selecionados</button></div>
         </section>
 
